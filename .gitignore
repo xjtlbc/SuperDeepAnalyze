@@ -48,3 +48,6 @@ e2e_screenshots/
 
 # Junk files from pip parsing errors
 =*
+
+# Docling models (~506MB, downloaded during Docker build)
+backend/docling_models/

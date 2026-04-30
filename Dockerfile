@@ -26,8 +26,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app/ ./app/
 COPY backend/pyproject.toml .
 
-# Copy docling models (pre-downloaded for offline use)
-COPY backend/docling_models/ ./docling_models/
+# Download docling models (layout + table structure, ~506MB)
+RUN python3 -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; StandardPdfPipeline.download_models_hf()" && \
+    python3 -c "from docling.document_converter import DocumentConverter; DocumentConverter().download_models()" && \
+    echo "Docling models downloaded" || echo "Model download failed (build with local models if needed)"
 
 # Copy built frontend
 COPY --from=frontend-builder /build/dist/ /app/frontend/dist/

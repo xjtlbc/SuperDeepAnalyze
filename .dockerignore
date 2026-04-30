@@ -1,0 +1,50 @@
+# Runtime data
+data/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Frontend (rebuilt in Docker)
+frontend/node_modules/
+frontend/dist/
+
+# Test artifacts
+tests/
+backend/tests/
+test_data/
+e2e_screenshots/
+.pytest_cache/
+
+# Documentation
+docs/
+
+# Certificates (not used by backend)
+certs/
+
+# Git
+.git/
+.gitignore
+
+# Claude Code
+.claude/
+
+# Junk files
+=*
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Config
+pytest.ini

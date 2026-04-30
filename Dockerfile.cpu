@@ -1,0 +1,69 @@
+# ===== Stage 1: Build frontend =====
+FROM node:22-slim AS frontend-builder
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /build
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY frontend/ ./
+RUN pnpm run build
+
+# ===== Stage 2: Install Python deps (throwaway builder) =====
+FROM python:3.11-slim AS pip-builder
+
+WORKDIR /install
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install/deps -r requirements.txt && \
+    rm -rf /install/deps/lib/python3.11/site-packages/nvidia/ \
+           /install/deps/lib/python3.11/site-packages/triton/ \
+           /install/deps/lib/python3.11/site-packages/torch/lib/libcu* \
+           /install/deps/lib/python3.11/site-packages/torch/cuda/ \
+           /install/deps/lib/python3.11/site-packages/torch/include/ \
+           2>/dev/null; echo "CUDA stripped"
+
+# ===== Stage 3: Runtime (CPU-only, small) =====
+FROM python:3.11-slim AS runtime
+
+# Install nginx and supervisor
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends nginx supervisor && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy stripped Python deps from builder
+COPY --from=pip-builder /install/deps /usr/local
+
+# Copy backend source
+WORKDIR /app/backend
+COPY backend/app/ ./app/
+COPY backend/pyproject.toml .
+
+# Copy docling models (pre-downloaded for offline use)
+COPY backend/docling_models/ ./docling_models/
+
+# Copy built frontend
+COPY --from=frontend-builder /build/dist/ /app/frontend/dist/
+
+# Nginx config
+COPY nginx.conf /etc/nginx/sites-available/superdeep
+RUN ln -sf /etc/nginx/sites-available/superdeep /etc/nginx/sites-enabled/superdeep && \
+    rm -f /etc/nginx/sites-enabled/default
+
+# Supervisor config
+COPY supervisord.conf /etc/supervisor/conf.d/superdeep.conf
+
+# Entrypoint
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Create data directory skeleton
+RUN mkdir -p /app/data/logs /app/data/faiss /app/data/knowledge_bases
+
+EXPOSE 80
+VOLUME ["/app/data"]
+
+ENV PYTHONUNBUFFERED=1
+ENV TZ=Asia/Shanghai
+
+WORKDIR /app
+ENTRYPOINT ["/app/entrypoint.sh"]

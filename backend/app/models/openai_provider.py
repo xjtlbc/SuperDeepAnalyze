@@ -1,5 +1,6 @@
 from typing import AsyncIterator
 
+import httpx
 import tiktoken
 from openai import AsyncOpenAI
 
@@ -19,6 +20,8 @@ class OpenAIProvider(LLMProvider):
         self._client = AsyncOpenAI(
             base_url=normalized_url,
             api_key=api_key,
+            timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0),
+            max_retries=3,
         )
 
     async def chat(

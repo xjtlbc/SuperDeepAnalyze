@@ -1,5 +1,6 @@
 """L0 compiler: global entity library, timeline, event graph, and cross-references."""
 
+import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -20,8 +21,22 @@ class L0Compiler:
         # Format L1 summaries for L0 prompt
         summaries_text = self._format_l1_summaries(all_l1_summaries)
 
-        # Call main LLM for global analysis
-        result = await self._llm_client.build_l0(summaries_text, kb_id=kb_id)
+        # Call main LLM for global analysis (with timeout + retry)
+        max_retries = 3
+        result = None
+        for attempt in range(max_retries):
+            try:
+                result = await asyncio.wait_for(
+                    self._llm_client.build_l0(summaries_text, kb_id=kb_id),
+                    timeout=600,
+                )
+                break
+            except asyncio.TimeoutError:
+                if attempt < max_retries - 1:
+                    import logging
+                    logging.warning("L0 compile timeout (attempt %d/%d), retrying...", attempt + 1, max_retries)
+                else:
+                    raise RuntimeError(f"L0 编译超时（{max_retries} 次重试后仍失败），请检查模型 API 响应速度")
 
         # Process and normalize results
         l0_data = self._normalize_l0_result(result, kb_id)

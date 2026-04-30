@@ -320,10 +320,13 @@ async def run_compilation(
 
         async def wiki_progress_cb(data: dict):
             msg = data.get("message", "")
+            # Map wiki-internal progress (0-100) to compile progress (80-97)
+            wiki_p = data.get("progress", 0)
+            mapped_progress = 80 + int(wiki_p * 17 / 100)
             await _send_progress(progress_cb, {
                 "type": data.get("type", "wiki_progress"),
                 "phase": data.get("phase", "wiki"),
-                "progress": data.get("progress", 0),
+                "progress": min(mapped_progress, 97),
                 "message": f"[Wiki] {msg}",
             })
 
@@ -606,8 +609,40 @@ async def trigger_compilation_parallel(kb_id: str, force: bool = False):
 
 @router.websocket("/ws/{kb_id}")
 async def websocket_compile(websocket: WebSocket, kb_id: str):
-    """WebSocket endpoint for compilation progress with cancel support."""
+    """WebSocket endpoint for compilation progress with cancel support.
+
+    If a compilation is already running for this KB, attaches to it
+    instead of starting a new one.
+    """
     await websocket.accept()
+
+    # Check if compilation is already running — subscribe to existing one
+    if kb_id in _active_compilations:
+        existing = _active_compilations[kb_id]
+        if "subscribers" in existing:
+            import logging
+            logging.info("Compile WS reconnect: %s — subscribing to active compilation", kb_id)
+            existing["subscribers"].append(websocket)
+            try:
+                # Keep connection alive, listen for cancel
+                while True:
+                    text = await websocket.receive_text()
+                    data = json.loads(text)
+                    if data.get("type") == "cancel":
+                        existing["cancel_event"].set()
+                        break
+            except Exception:
+                pass
+            finally:
+                try:
+                    existing["subscribers"].remove(websocket)
+                except ValueError:
+                    pass
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+            return
 
     # Verify KB exists
     conn = get_connection()
@@ -631,25 +666,22 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
 
     # Create cancel event for this compilation
     cancel_event = asyncio.Event()
-    _active_compilations[kb_id] = {"cancel_event": cancel_event}
-
-    # Create compile queue entry
-    queue_id = f"cq_{uuid.uuid4().hex[:12]}"
-    conn = get_connection()
-    try:
-        conn.execute(
-            "INSERT INTO compile_queue (id, kb_id, status, message) VALUES (?, ?, 'processing', '编译已启动')",
-            (queue_id, kb_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    _subscribers: list[WebSocket] = [websocket]
 
     async def progress_cb(data: dict):
-        try:
-            await websocket.send_text(json.dumps(data))
-        except Exception:
-            pass
+        msg = json.dumps(data)
+        # Broadcast to all connected WS subscribers
+        dead = []
+        for ws in _subscribers:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            try:
+                _subscribers.remove(ws)
+            except ValueError:
+                pass
         # Update queue progress
         try:
             conn = get_connection()
@@ -662,6 +694,19 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
             pass
         finally:
             conn.close()
+
+    # Register active compilation (after progress_cb is defined)
+    queue_id = f"cq_{uuid.uuid4().hex[:12]}"
+    _active_compilations[kb_id] = {"cancel_event": cancel_event, "subscribers": _subscribers}
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO compile_queue (id, kb_id, status, message) VALUES (?, ?, 'processing', '编译已启动')",
+            (queue_id, kb_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     # Listen for cancel message from client
     async def listen_for_cancel():

@@ -607,62 +607,127 @@ async def trigger_compilation_parallel(kb_id: str, force: bool = False):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _run_subscriber_ws(websocket: WebSocket, kb_id: str, existing: dict):
+    """Attach a reconnect WS to an active compilation using a queue.
+
+    Each subscriber gets its own asyncio.Queue. The shared progress_cb puts
+    messages into all subscriber queues (no direct WS send). This avoids
+    concurrent-write conflicts on the same WebSocket.
+    """
+    import logging
+    logging.info("Compile WS reconnect: %s — subscribing to active compilation", kb_id)
+
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    sub_entry = {"ws": websocket, "queue": queue}
+    existing["subscribers"].append(sub_entry)
+
+    try:
+        # Seed queue with current compile status from DB
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT status, progress, message FROM compile_queue WHERE kb_id = ? ORDER BY created_at DESC LIMIT 1",
+                (kb_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            await queue.put(json.dumps({
+                "type": "progress",
+                "progress": row["progress"] or 0,
+                "message": row["message"] or "编译进行中...",
+            }))
+        else:
+            await queue.put(json.dumps({
+                "type": "progress",
+                "progress": 50,
+                "message": "编译进行中（重连中）",
+            }))
+
+        # Two concurrent tasks: forward queue→WS  and  listen for cancel from client
+        async def forward_to_ws():
+            while True:
+                msg = await queue.get()
+                await websocket.send_text(msg)
+                try:
+                    data = json.loads(msg)
+                    if data.get("type") in ("done", "error", "paused"):
+                        return
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+        async def wait_for_cancel():
+            while True:
+                text = await websocket.receive_text()
+                try:
+                    data = json.loads(text)
+                    if data.get("type") == "cancel":
+                        existing["cancel_event"].set()
+                        return
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+        fwd_task = asyncio.create_task(forward_to_ws())
+        cancel_task = asyncio.create_task(wait_for_cancel())
+        done, pending = await asyncio.wait(
+            [fwd_task, cancel_task], return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+    except Exception as e:
+        import logging
+        logging.error("Subscriber error for %s: %s", kb_id, e)
+    finally:
+        try:
+            existing["subscribers"].remove(sub_entry)
+        except ValueError:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @router.websocket("/ws/{kb_id}")
 async def websocket_compile(websocket: WebSocket, kb_id: str):
     """WebSocket endpoint for compilation progress with cancel support.
 
     If a compilation is already running for this KB, attaches to it
     instead of starting a new one.
+
+    Uses per-subscriber asyncio.Queue to avoid concurrent WS writes.
     """
     await websocket.accept()
+
+    # If KB already compiled, return result immediately (no re-compile on refresh)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT compile_status FROM knowledge_bases WHERE id = ?",
+            (kb_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row and row["compile_status"] == "completed" and kb_id not in _active_compilations:
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "done",
+                "progress": 100,
+                "message": "编译已完成",
+            }))
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        return
 
     # Check if compilation is already running — subscribe to existing one
     if kb_id in _active_compilations:
         existing = _active_compilations[kb_id]
         if "subscribers" in existing:
-            import logging
-            logging.info("Compile WS reconnect: %s — subscribing to active compilation", kb_id)
-            existing["subscribers"].append(websocket)
-            try:
-                # Send current compile status so frontend has immediate feedback
-                conn = get_connection()
-                try:
-                    row = conn.execute(
-                        "SELECT status, progress, message FROM compile_queue WHERE kb_id = ? ORDER BY created_at DESC LIMIT 1",
-                        (kb_id,),
-                    ).fetchone()
-                finally:
-                    conn.close()
-                if row:
-                    await websocket.send_text(json.dumps({
-                        "type": "progress",
-                        "progress": row["progress"] or 0,
-                        "message": row["message"] or "编译进行中...",
-                    }))
-                else:
-                    await websocket.send_text(json.dumps({
-                        "type": "progress",
-                        "progress": 50,
-                        "message": "编译进行中（重连中）",
-                    }))
-                # Keep connection alive, listen for cancel
-                while True:
-                    text = await websocket.receive_text()
-                    data = json.loads(text)
-                    if data.get("type") == "cancel":
-                        existing["cancel_event"].set()
-                        break
-            except Exception:
-                pass
-            finally:
-                try:
-                    existing["subscribers"].remove(websocket)
-                except ValueError:
-                    pass
-                try:
-                    await websocket.close()
-                except Exception:
-                    pass
+            await _run_subscriber_ws(websocket, kb_id, existing)
             return
 
     # Verify KB exists
@@ -685,25 +750,26 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
     finally:
         conn.close()
 
-    # Create cancel event for this compilation
+    # Each subscriber: {"ws": WebSocket, "queue": asyncio.Queue}
     cancel_event = asyncio.Event()
-    _subscribers: list[WebSocket] = [websocket]
+    main_queue: asyncio.Queue[str] = asyncio.Queue()
+    _subscribers: list[dict] = [{"ws": websocket, "queue": main_queue}]
 
     async def progress_cb(data: dict):
         msg = json.dumps(data)
-        # Broadcast to all connected WS subscribers
+        # Put message in all subscriber queues (no direct WS send)
         dead = []
-        for ws in _subscribers:
+        for sub in _subscribers:
             try:
-                await ws.send_text(msg)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
+                sub["queue"].put_nowait(msg)
+            except asyncio.QueueFull:
+                dead.append(sub)
+        for sub in dead:
             try:
-                _subscribers.remove(ws)
+                _subscribers.remove(sub)
             except ValueError:
                 pass
-        # Update queue progress
+        # Update queue progress in DB
         try:
             conn = get_connection()
             conn.execute(
@@ -716,7 +782,6 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
         finally:
             conn.close()
 
-    # Register active compilation (after progress_cb is defined)
     queue_id = f"cq_{uuid.uuid4().hex[:12]}"
     _active_compilations[kb_id] = {"cancel_event": cancel_event, "subscribers": _subscribers}
     conn = get_connection()
@@ -729,7 +794,13 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
     finally:
         conn.close()
 
-    # Listen for cancel message from client
+    # Forward messages from main queue to the original WS
+    async def main_sender():
+        while True:
+            msg = await main_queue.get()
+            await websocket.send_text(msg)
+
+    # Listen for cancel from the original client
     async def listen_for_cancel():
         try:
             while True:
@@ -744,6 +815,7 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
         except Exception:
             pass
 
+    sender_task = asyncio.create_task(main_sender())
     cancel_task = asyncio.create_task(listen_for_cancel())
 
     try:
@@ -763,18 +835,20 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
         finally:
             conn.close()
 
-        # Broadcast done to all subscribers
+        # Broadcast done via queues
         done_msg = json.dumps({
             "type": "done",
             "progress": 100,
             "message": "编译完成",
             "stats": result,
         })
-        for ws in list(_subscribers):
+        for sub in list(_subscribers):
             try:
-                await ws.send_text(done_msg)
-            except Exception:
+                sub["queue"].put_nowait(done_msg)
+            except asyncio.QueueFull:
                 pass
+        # Let sender tasks flush the done message
+        await asyncio.sleep(0.2)
     except Exception as e:
         conn = get_connection()
         try:
@@ -790,15 +864,17 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
         finally:
             conn.close()
 
-        # Broadcast error to all subscribers
+        # Broadcast error via queues
         error_msg = json.dumps({"type": "error", "message": str(e)})
-        for ws in list(_subscribers):
+        for sub in list(_subscribers):
             try:
-                await ws.send_text(error_msg)
-            except Exception:
+                sub["queue"].put_nowait(error_msg)
+            except asyncio.QueueFull:
                 pass
+        await asyncio.sleep(0.2)
     finally:
         cancel_task.cancel()
+        sender_task.cancel()
         _active_compilations.pop(kb_id, None)
         try:
             await websocket.close()

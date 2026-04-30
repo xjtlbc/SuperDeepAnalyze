@@ -626,7 +626,7 @@ async def _run_subscriber_ws(websocket: WebSocket, kb_id: str, existing: dict):
         conn = get_connection()
         try:
             row = conn.execute(
-                "SELECT status, progress, message FROM compile_queue WHERE kb_id = ? ORDER BY created_at DESC LIMIT 1",
+                "SELECT status, progress, message FROM compile_queue WHERE kb_id = ? ORDER BY started_at DESC LIMIT 1",
                 (kb_id,),
             ).fetchone()
         finally:
@@ -657,15 +657,18 @@ async def _run_subscriber_ws(websocket: WebSocket, kb_id: str, existing: dict):
                     pass
 
         async def wait_for_cancel():
-            while True:
-                text = await websocket.receive_text()
-                try:
-                    data = json.loads(text)
-                    if data.get("type") == "cancel":
-                        existing["cancel_event"].set()
-                        return
-                except (json.JSONDecodeError, KeyError):
-                    pass
+            try:
+                while True:
+                    text = await websocket.receive_text()
+                    try:
+                        data = json.loads(text)
+                        if data.get("type") == "cancel":
+                            existing["cancel_event"].set()
+                            return
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+            except Exception:
+                pass  # WS closed by client
 
         fwd_task = asyncio.create_task(forward_to_ws())
         cancel_task = asyncio.create_task(wait_for_cancel())

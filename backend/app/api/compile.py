@@ -624,6 +624,27 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
             logging.info("Compile WS reconnect: %s — subscribing to active compilation", kb_id)
             existing["subscribers"].append(websocket)
             try:
+                # Send current compile status so frontend has immediate feedback
+                conn = get_connection()
+                try:
+                    row = conn.execute(
+                        "SELECT status, progress, message FROM compile_queue WHERE kb_id = ? ORDER BY created_at DESC LIMIT 1",
+                        (kb_id,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                if row:
+                    await websocket.send_text(json.dumps({
+                        "type": "progress",
+                        "progress": row["progress"] or 0,
+                        "message": row["message"] or "编译进行中...",
+                    }))
+                else:
+                    await websocket.send_text(json.dumps({
+                        "type": "progress",
+                        "progress": 50,
+                        "message": "编译进行中（重连中）",
+                    }))
                 # Keep connection alive, listen for cancel
                 while True:
                     text = await websocket.receive_text()
@@ -742,15 +763,18 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
         finally:
             conn.close()
 
-        try:
-            await websocket.send_text(json.dumps({
-                "type": "done",
-                "progress": 100,
-                "message": "编译完成",
-                "stats": result,
-            }))
-        except Exception:
-            pass  # Client disconnected after compilation succeeded — not a compile error
+        # Broadcast done to all subscribers
+        done_msg = json.dumps({
+            "type": "done",
+            "progress": 100,
+            "message": "编译完成",
+            "stats": result,
+        })
+        for ws in list(_subscribers):
+            try:
+                await ws.send_text(done_msg)
+            except Exception:
+                pass
     except Exception as e:
         conn = get_connection()
         try:
@@ -766,10 +790,13 @@ async def websocket_compile(websocket: WebSocket, kb_id: str):
         finally:
             conn.close()
 
-        try:
-            await websocket.send_text(json.dumps({"type": "error", "message": str(e)}))
-        except Exception:
-            pass
+        # Broadcast error to all subscribers
+        error_msg = json.dumps({"type": "error", "message": str(e)})
+        for ws in list(_subscribers):
+            try:
+                await ws.send_text(error_msg)
+            except Exception:
+                pass
     finally:
         cancel_task.cancel()
         _active_compilations.pop(kb_id, None)

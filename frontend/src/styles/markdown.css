@@ -1,0 +1,209 @@
+/* =============================================================================
+   Markdown Rendering Styles — SuperDeepAnalyze
+   For react-markdown output within chat messages and wiki pages.
+   ============================================================================= */
+
+.markdown-body {
+  line-height: var(--leading-relaxed);
+  word-wrap: break-word;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin-top: var(--space-6);
+  margin-bottom: var(--space-3);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+}
+
+.markdown-body h1 { font-size: var(--text-2xl); border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+.markdown-body h2 { font-size: var(--text-xl); border-bottom: 1px solid var(--border); padding-bottom: var(--space-1); }
+.markdown-body h3 { font-size: var(--text-lg); }
+.markdown-body h4 { font-size: var(--text-md); }
+
+.markdown-body p {
+  margin-bottom: var(--space-3);
+}
+
+.markdown-body ul, .markdown-body ol {
+  padding-left: var(--space-8);
+  margin-bottom: var(--space-3);
+}
+
+.markdown-body li {
+  margin-bottom: var(--space-1);
+}
+
+.markdown-body blockquote {
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-4);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-subtle);
+  color: var(--text-secondary);
+}
+
+.markdown-body code {
+  padding: 1px 4px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.markdown-body pre {
+  margin: var(--space-3) 0;
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+.markdown-body pre code {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+}
+
+.markdown-body table {
+  width: 100%;
+  margin: var(--space-3) 0;
+  border-collapse: collapse;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.markdown-body th {
+  background: var(--bg-tertiary);
+  font-weight: var(--weight-semibold);
+}
+
+.markdown-body tr:nth-child(even) td {
+  background: var(--bg-secondary);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: var(--radius-md);
+}
+
+.markdown-body hr {
+  margin: var(--space-6) 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+/* Wikilink styling */
+.markdown-body .wikilink {
+  color: var(--accent);
+  border-bottom: 1px dashed var(--accent);
+  cursor: pointer;
+}
+.markdown-body .wikilink:hover {
+  color: var(--accent-hover);
+  border-bottom-style: solid;
+}
+
+/* ── Professional rendering enhancements ─────────────────────────────── */
+
+/* Evidence citation blocks */
+.markdown-body blockquote.evidence,
+.markdown-body blockquote:has(strong:first-child:contains("[证据]")) {
+  border-left-color: var(--info);
+  background: var(--info-bg);
+  padding-left: 16px;
+  font-size: 13px;
+}
+.markdown-body blockquote.evidence::before {
+  content: "📄 证据来源";
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--info);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Legal article references */
+.markdown-body strong:has(+ :contains("第")) {
+  color: var(--accent-strong);
+  background: var(--accent-subtle);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+/* Monetary and numeric highlighting */
+.markdown-body .monetary-highlight {
+  font-weight: 600;
+  color: var(--warning);
+}
+
+/* Enhanced tables with stripes and hover */
+.markdown-body table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.markdown-body th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.markdown-body tr:hover td {
+  background: var(--accent-subtle);
+}
+.markdown-body td, .markdown-body th {
+  padding: 8px 12px;
+}
+
+/* Timeline event styling */
+.markdown-body .timeline-event {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0;
+  border-left: 2px solid var(--accent);
+  padding-left: 16px;
+  margin-left: 8px;
+}
+.markdown-body .timeline-event .date {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  min-width: 80px;
+}
+
+/* Entity mention in text */
+.markdown-body .entity-mention {
+  color: var(--accent);
+  border-bottom: 1px dotted var(--accent);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.markdown-body .entity-mention:hover {
+  background: var(--accent-subtle);
+}
+
+/* Document reference badges */
+.markdown-body .doc-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}

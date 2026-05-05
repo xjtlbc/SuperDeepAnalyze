@@ -255,6 +255,15 @@ async def _do_parse(doc_id: str, kb_id: str, file_path: Path, safe_filename: str
 
     # Update DB to completed
     _update_parse_status(doc_id, "completed")
+
+    # Update chunk count
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE documents SET chunk_count = ? WHERE id = ?", (len(chunks), doc_id))
+        conn.commit()
+    finally:
+        conn.close()
+
     logger.info("Parse completed for doc %s (%d chunks)", doc_id, len(chunks))
 
 
@@ -283,32 +292,44 @@ def _infer_file_type(filename: str) -> str:
 
 
 @router.get("/list/{kb_id}")
-async def list_documents(kb_id: str):
-    """List all documents in a knowledge base."""
+async def list_documents(kb_id: str, snippet: bool = Query(False)):
+    """List all documents in a knowledge base.
+
+    Args:
+        kb_id: Knowledge base ID
+        snippet: If true, include content_snippet (first 500 chars of parsed.md)
+    """
     conn = get_connection()
     try:
         cursor = conn.execute(
-            "SELECT id, kb_id, filename, file_hash, file_size, file_type, parse_status, compile_status, parse_error, created_at FROM documents WHERE kb_id = ? ORDER BY created_at DESC",
+            "SELECT id, kb_id, filename, file_hash, file_size, file_type, parse_status, compile_status, parse_error, created_at, chunk_count FROM documents WHERE kb_id = ? ORDER BY created_at DESC",
             (kb_id,),
         )
         rows = cursor.fetchall()
-        return [
-            {
-                "id": row["id"],
-                "kb_id": row["kb_id"],
-                "filename": row["filename"],
-                "file_hash": row["file_hash"],
-                "file_size": row["file_size"],
-                "file_type": row["file_type"],
-                "parse_status": row["parse_status"],
-                "compile_status": row["compile_status"],
-                "parse_error": row["parse_error"],
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
     finally:
         conn.close()
+
+    results = []
+    for row in rows:
+        item = {
+            "id": row["id"],
+            "kb_id": row["kb_id"],
+            "filename": row["filename"],
+            "file_hash": row["file_hash"],
+            "file_size": row["file_size"],
+            "file_type": row["file_type"],
+            "parse_status": row["parse_status"],
+            "compile_status": row["compile_status"],
+            "parse_error": row["parse_error"],
+            "created_at": row["created_at"],
+            "chunk_count": row["chunk_count"] if "chunk_count" in row.keys() else 0,
+        }
+        if snippet and row["parse_status"] == "completed":
+            parsed_path = settings.KB_DIR / kb_id / "documents" / row["id"] / "parsed.md"
+            if parsed_path.exists():
+                item["content_snippet"] = parsed_path.read_text(encoding="utf-8")[:500].strip()
+        results.append(item)
+    return results
 
 
 @router.get("/{doc_id}")
@@ -347,6 +368,9 @@ async def get_document_status(doc_id: str):
         }
     finally:
         conn.close()
+
+
+@router.get("/{doc_id}/chunks")
 async def get_document_chunks(doc_id: str, kb_id: str):
     """Get L2 chunks for a document."""
     chunks_dir = settings.KB_DIR / kb_id / "documents" / doc_id / "l2_chunks"
@@ -430,8 +454,20 @@ async def delete_document(doc_id: str):
 # ─── Document Detail APIs ───
 
 @router.get("/{doc_id}/detail")
-async def get_document_detail(doc_id: str, kb_id: str = Query(...)):
+async def get_document_detail(doc_id: str, kb_id: str = Query(None)):
     """Get document overview: basic info + L1/L2 stats."""
+    # Resolve kb_id — query from DB if not provided
+    if not kb_id:
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT kb_id FROM documents WHERE id = ?", (doc_id,)).fetchone()
+            if row:
+                kb_id = row["kb_id"]
+        finally:
+            conn.close()
+    if not kb_id:
+        raise HTTPException(status_code=404, detail="Document not found or kb_id missing")
+
     doc_dir = settings.KB_DIR / kb_id / "documents" / doc_id
     if not doc_dir.exists():
         raise HTTPException(status_code=404, detail="Document directory not found")
@@ -697,8 +733,10 @@ async def get_l0_entities(doc_id: str, kb_id: str = Query(...)):
         l1_data = json.load(f)
     if isinstance(l1_data, list):
         for entry in l1_data:
-            for name in entry.get("entities_mentioned", []):
-                entity_names.add(name)
+            for ent in entry.get("entities_mentioned", []):
+                name = ent if isinstance(ent, str) else ent.get("name", "")
+                if name:
+                    entity_names.add(name)
 
     # Match with L0 entities
     l0_entities = []

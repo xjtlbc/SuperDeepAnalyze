@@ -18,6 +18,11 @@ class CreateKBRequest(BaseModel):
     description: str = ""
 
 
+class UpdateKBRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
 class KBResponse(BaseModel):
     id: str
     name: str
@@ -88,6 +93,9 @@ async def get_kb(kb_id: str):
 @router.post("", response_model=KBResponse, status_code=201)
 async def create_kb(data: CreateKBRequest):
     """Create a new knowledge base."""
+    if not data.name or not data.name.strip():
+        raise HTTPException(status_code=422, detail="Knowledge base name cannot be empty")
+
     kb_id = f"kb_{uuid.uuid4().hex[:8]}"
     kb_dir = settings.KB_DIR / kb_id
     kb_dir.mkdir(parents=True, exist_ok=True)
@@ -112,11 +120,53 @@ async def create_kb(data: CreateKBRequest):
     )
 
 
+@router.put("/{kb_id}", response_model=KBResponse)
+async def update_kb(kb_id: str, data: UpdateKBRequest):
+    """Update a knowledge base name and/or description."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, name, description, compile_status, created_at FROM knowledge_bases WHERE id = ?",
+            (kb_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+
+        new_name = data.name.strip() if data.name else row["name"]
+        new_desc = data.description if data.description is not None else row["description"]
+
+        if not new_name:
+            raise HTTPException(status_code=422, detail="Knowledge base name cannot be empty")
+
+        conn.execute(
+            "UPDATE knowledge_bases SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (new_name, new_desc, kb_id),
+        )
+        conn.commit()
+
+        return KBResponse(
+            id=row["id"],
+            name=new_name,
+            description=new_desc or "",
+            compile_status=row["compile_status"],
+            document_count=0,
+            created_at=row["created_at"],
+        )
+    finally:
+        conn.close()
+
+
 @router.delete("/{kb_id}", status_code=204)
 async def delete_kb(kb_id: str):
     """Delete a knowledge base and all its data."""
     conn = get_connection()
     try:
+        # Check existence first (Bug #4 fix: return 404 for nonexistent KB)
+        exists = conn.execute(
+            "SELECT id FROM knowledge_bases WHERE id = ?", (kb_id,)
+        ).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
         conn.execute("BEGIN IMMEDIATE")
         # Delete child tables that reference knowledge_bases (order matters for FK)
         conn.execute("DELETE FROM fts_content WHERE doc_id IN (SELECT id FROM documents WHERE kb_id = ?)", (kb_id,))

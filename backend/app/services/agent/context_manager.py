@@ -312,6 +312,11 @@ class ContextManager:
         total = self.estimate_total_tokens(messages)
         return total > self._autocompact_threshold
 
+    def should_reactive_compact(self, messages: list[dict]) -> bool:
+        """Proactive check: tokens > 90% of context window (before error occurs)."""
+        total = self.estimate_total_tokens(messages)
+        return total > int(self._model_context_window * 0.90)
+
     def should_leaf_compact(self, messages: list[dict]) -> bool:
         total = self.estimate_total_tokens(messages)
         return total > self._leaf_compact_threshold
@@ -439,6 +444,120 @@ class ContextManager:
             self._consecutive_compact_failures += 1
             return messages
 
+    def emergency_compact(self, messages: list[dict], keep_last_n: int = 6) -> list[dict]:
+        """Zero-API-cost emergency compaction: strip all old tool results.
+
+        Keeps: system prompt + last N messages (typically 3 turns).
+        Replaces all tool results with compact placeholders.
+        No LLM call needed — pure string manipulation.
+        """
+        new_messages = []
+        preserved_entities: set[str] = set()
+        preserved_docs: set[str] = set()
+        tool_count = 0
+
+        # First pass: extract key entities and docs from all entries
+        for entry in self._entries:
+            preserved_entities.update(entry.entities_found)
+            preserved_docs.update(entry.docs_referenced)
+
+        # Collect entity summary (D2-level: coarse, ~100 tokens)
+        entity_names = ", ".join(sorted(preserved_entities)[:30])
+        doc_names = ", ".join(sorted(preserved_docs)[:15])
+
+        compact_summary = "[系统紧急压缩]"
+        if entity_names:
+            compact_summary += f"\n已发现实体: {entity_names}"
+        if doc_names:
+            compact_summary += f"\n已读取文档: {doc_names}"
+
+        # Second pass: build compressed message list
+        system_msg = None
+        user_msg = None
+        for msg in messages:
+            role = msg.get("role", "")
+            if role == "system" and system_msg is None:
+                system_msg = msg
+            elif role == "user" and user_msg is None:
+                user_msg = msg
+
+        # Rebuild: system + user + compact summary + last N messages
+        if system_msg:
+            new_messages.append(system_msg)
+        if user_msg:
+            new_messages.append(user_msg)
+
+        new_messages.append({
+            "role": "assistant",
+            "content": compact_summary,
+        })
+
+        # Keep last N messages (recent turns)
+        tail = messages[-keep_last_n:] if len(messages) > keep_last_n else messages
+        # Filter out system/user messages we already added
+        seen_content = {json.dumps(m, sort_keys=True, ensure_ascii=False) for m in new_messages}
+        for msg in tail:
+            msg_key = json.dumps(msg, sort_keys=True, ensure_ascii=False)
+            if msg_key not in seen_content:
+                new_messages.append(msg)
+                seen_content.add(msg_key)
+
+        # Count how many tool results were stripped
+        stripped = sum(1 for m in messages if m.get("role") == "tool") - \
+                   sum(1 for m in new_messages if m.get("role") == "tool")
+        if stripped > 0:
+            logger.info("Emergency compact stripped %d tool results", stripped)
+
+        return new_messages
+
+    def sm_compact(
+        self,
+        messages: list[dict],
+        session_notes: list[dict],
+        keep_last_n: int = 10,
+    ) -> list[dict]:
+        """Session-Memory compact: replace old messages with accumulated notes.
+
+        Zero-API-cost: uses already-extracted session notes to replace early
+        conversation messages. Keeps system prompt + session notes block +
+        last N messages intact.
+
+        Inspired by Claude Code's SM-compact in compact.ts.
+        """
+        if not session_notes:
+            return messages
+
+        # Format notes as system context
+        from app.services.agent.memory import format_session_notes
+        notes_text = format_session_notes(session_notes)
+        notes_block = {
+            "role": "system",
+            "content": f"[会话摘要] 以下是从之前对话中提取的关键发现:\n\n{notes_text}\n\n请利用这些已有发现，避免重复搜索。"
+        }
+
+        # Keep system prompt(s) + notes + last N messages
+        new_messages = []
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+
+        if keep_last_n >= len(messages):
+            return messages
+
+        # Keep all system messages at the front
+        new_messages.extend(system_msgs)
+
+        # Add notes block after system messages
+        new_messages.append(notes_block)
+
+        # Keep last N non-system messages
+        non_system = [m for m in messages if m.get("role") != "system"]
+        new_messages.extend(non_system[-keep_last_n:])
+
+        stripped = len(messages) - len(new_messages)
+        logger.info("SM compact: reduced %d → %d messages (removed %d)",
+                     len(messages), len(new_messages), stripped)
+
+        return new_messages
+
     async def _leaf_compact(
         self, messages: list[dict], llm_client
     ) -> list[dict]:
@@ -490,22 +609,36 @@ class ContextManager:
     async def _full_compact(
         self, messages: list[dict], llm_client
     ) -> list[dict]:
-        """Full auto-compact: LLM-generated summary of entire conversation history."""
+        """Full auto-compact with hierarchical D2/D1 summary."""
         content_to_summarize = _extract_compressable_content(messages)
         if not content_to_summarize.strip():
             return messages
 
-        summary_prompt = (
-            "你是知识库分析助手。请将以下搜索历史压缩为一段简短摘要。\n"
-            "必须保留：关键实体名称、关系描述、时间点、文档ID。\n"
-            "用中文输出，300字以内。\n\n"
+        # D1-level: 9-section structured summary (~300 tokens)
+        d1_prompt = (
+            "你是知识库分析助手。请将以下对话历史压缩为结构化摘要，包含以下9个部分：\n"
+            "1. 主请求（用户的核心问题/目标）\n"
+            "2. 关键概念（讨论中的重要概念和术语）\n"
+            "3. 已发现实体（找到的人物、地点、事件等）\n"
+            "4. 已发现关系（实体之间的关系）\n"
+            "5. 已检查文档（搜索和阅读过的文档列表）\n"
+            "6. 错误和问题（遇到的错误或困难）\n"
+            "7. 问题解决进展（已解决和未解决的方面）\n"
+            "8. 当前工作状态（正在进行的搜索或分析）\n"
+            "9. 下一步建议（建议的后续搜索方向）\n"
+            "直接输出markdown格式的摘要，不要使用工具，300字以内。\n\n"
             f"搜索历史：\n{content_to_summarize[:15000]}"
         )
 
-        summary = await self._summarize_with_escalation(
-            llm_client, content_to_summarize, summary_prompt
+        d1_summary = await self._summarize_with_escalation(
+            llm_client, content_to_summarize, d1_prompt
         )
 
+        # D2-level: coarse summary (~100 tokens) — extract just entity names
+        d2_summary = _extract_coarse_summary(content_to_summarize, self._entries)
+
+        # Use D1 if available, fallback to D2
+        summary = d1_summary or d2_summary
         if not summary:
             return messages
 
@@ -524,7 +657,12 @@ class ContextManager:
     async def _summarize_with_escalation(
         self, llm_client, source_text: str, prompt: str
     ) -> Optional[str]:
-        """Three-level escalation: normal → aggressive → fallback."""
+        """Four-level escalation: normal → PTL retry → aggressive → fallback.
+
+        Level 1.5: If the summarization request itself hits prompt-too-long,
+        truncate source to 50% and retry (up to 3 times). Inspired by
+        Claude Code compact.ts PTL retry pattern.
+        """
         # Level 1: Normal
         try:
             response = await llm_client.chat(
@@ -537,6 +675,28 @@ class ContextManager:
                 return summary
         except Exception:
             pass
+
+        # Level 1.5: PTL retry — truncate source and retry (up to 3 times)
+        truncated = source_text
+        for ptl_attempt in range(3):
+            try:
+                short_prompt = prompt.replace(
+                    source_text[:len(truncated)] if len(truncated) < len(source_text) else source_text[:len(truncated)],
+                    truncated[:len(truncated)]
+                ) if len(truncated) < len(source_text) else prompt.replace(source_text, truncated)
+                response = await llm_client.chat(
+                    role=RoleType.LIGHTWEIGHT,
+                    messages=[{"role": "user", "content": short_prompt}],
+                    temperature=0.3,
+                )
+                summary = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if summary and _estimate_tokens_cjk(summary) < _estimate_tokens_cjk(source_text):
+                    return summary
+            except Exception:
+                pass
+            truncated = truncated[:len(truncated) // 2]
+            if len(truncated) < 500:
+                break
 
         # Level 2: Aggressive — shorter prompt, explicit instruction
         try:
@@ -575,6 +735,129 @@ class ContextManager:
             if not entry.consumed:
                 return entry
         return None
+
+    def cache_edit(self, messages: list[dict], max_tool_result_chars: int = 2000) -> list[dict]:
+        """Truncate old tool results in-place without changing message count.
+
+        Preserves the message array structure (role, tool_call_id, etc.) so
+        the API's prompt cache stays valid. Only shortens tool content strings.
+        The most recent 6 tool results are left untouched.
+        """
+        tool_indices = _find_tool_result_indices(messages)
+        if len(tool_indices) <= 6:
+            return messages
+
+        old_indices = tool_indices[:-6]  # Protect the newest 6
+        new_messages = list(messages)
+        edited = 0
+
+        for idx in old_indices:
+            msg = new_messages[idx]
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) > max_tool_result_chars:
+                truncated = content[:max_tool_result_chars]
+                new_messages[idx] = {
+                    "role": "tool",
+                    "tool_call_id": msg.get("tool_call_id", ""),
+                    "content": truncated + "\n[cache_edit截断]",
+                }
+                edited += 1
+
+        if edited:
+            logger.debug("Cache edit truncated %d old tool results", edited)
+        return new_messages
+
+    def sm_compact(self, messages: list[dict], session_notes: list[dict]) -> list[dict]:
+        """Session Memory compression — replace old messages with notes summary.
+
+        Zero API cost. Keeps: system prompt + session notes block + last 4 turns.
+        Replaces: everything in between with compact notes summary.
+        """
+        if not session_notes:
+            return messages
+
+        notes_text = "## 会话积累的关键发现\n\n"
+        for note in session_notes:
+            note_type = note.get("type", "info")
+            content = note.get("content", "")
+            if content:
+                notes_text += f"- [{note_type}] {content}\n"
+
+        result = []
+        # Keep first system message
+        if messages and messages[0].get("role") == "system":
+            result.append(messages[0])
+
+        # Insert session notes block
+        result.append({"role": "system", "content": notes_text})
+
+        # Keep last 8 messages (4 turns: user+assistant pairs)
+        tail = messages[-8:] if len(messages) > 8 else messages[1:]
+        result.extend(tail)
+
+        return result
+
+    def inject_kb_context(self, messages: list[dict], kb_id: str, kb_state) -> list[dict]:
+        """Inject KB state-aware context based on compilation status.
+
+        - Compiled KB: inject L0 summary (max 30% of context window)
+        - Partially compiled: inject available summaries + raw_search hint
+        - Uncompiled: inject degradation hint + document list
+        """
+        if not kb_id:
+            return messages
+
+        context_block = ""
+
+        if kb_state:
+            has_l0 = getattr(kb_state, "has_entities", False)
+            has_l1 = getattr(kb_state, "has_l1_summaries", False)
+            has_l2 = getattr(kb_state, "has_l2_chunks", False)
+
+            if has_l0 and has_l1 and has_l2:
+                # Fully compiled — inject L0 summary
+                try:
+                    from app.config import settings
+                    entities_path = settings.KB_DIR / kb_id / "l0" / "entities.json"
+                    if entities_path.exists():
+                        with open(entities_path, "r", encoding="utf-8") as f:
+                            entities = json.load(f)
+                        entity_names = [e.get("name", "") for e in entities[:30] if e.get("name")]
+                        if entity_names:
+                            max_chars = int(self._model_context_window * 0.3)
+                            context_block = (
+                                f"知识库已完整编译。已知实体（前30个）: {', '.join(entity_names)}\n"
+                                "可使用 search_keyword, read_l0/l1/l2, expand_entity 等工具高效检索。"
+                            )
+                            if len(context_block) > max_chars:
+                                context_block = context_block[:max_chars] + "..."
+                except Exception:
+                    pass
+            elif has_l2:
+                context_block = (
+                    "知识库已部分编译（有L2索引但缺少摘要）。\n"
+                    "可使用 search_keyword 搜索，用 raw_search 作为补充。"
+                )
+            else:
+                context_block = (
+                    "知识库尚未编译，无预建索引。\n"
+                    "请使用 raw_search 或 doc_grep 直接搜索文档原文。"
+                    "也可以用 wiki_browse list 查看可用文档列表。"
+                )
+
+        if context_block:
+            # Find or create KB context message
+            kb_msg_found = False
+            for i, msg in enumerate(messages):
+                if msg.get("role") == "system" and "知识库" in msg.get("content", ""):
+                    messages[i] = {"role": "system", "content": context_block}
+                    kb_msg_found = True
+                    break
+            if not kb_msg_found:
+                # Insert after first system message
+                messages.insert(1, {"role": "system", "content": context_block})
+
+        return messages
 
     def get_context_stats(self) -> dict:
         return {
@@ -716,3 +999,29 @@ def _build_post_compact_messages(
     new_messages.extend(messages[-keep_count:])
 
     return new_messages
+
+
+def _extract_coarse_summary(content: str, entries: list[ToolResultEntry]) -> str:
+    """D2-level coarse summary: extract entity names, doc IDs, tool usage stats.
+
+    Zero LLM call — pure string extraction, ~100 tokens.
+    """
+    all_entities: set[str] = set()
+    all_docs: set[str] = set()
+    tool_counts: dict[str, int] = {}
+
+    for entry in entries:
+        all_entities.update(entry.entities_found)
+        all_docs.update(entry.docs_referenced)
+        tool_counts[entry.tool_name] = tool_counts.get(entry.tool_name, 0) + 1
+
+    parts = ["[搜索摘要]"]
+    if all_entities:
+        parts.append(f"实体: {', '.join(sorted(all_entities)[:25])}")
+    if all_docs:
+        parts.append(f"文档: {', '.join(sorted(all_docs)[:15])}")
+    if tool_counts:
+        tool_str = ", ".join(f"{k}×{v}" for k, v in sorted(tool_counts.items()))
+        parts.append(f"搜索: {tool_str}")
+
+    return "\n".join(parts)

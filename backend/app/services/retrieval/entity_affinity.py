@@ -54,7 +54,9 @@ class EntityAffinityScorer:
                 continue
 
             for summary in summaries:
-                entities = summary.get("entities_mentioned", [])
+                raw_entities = summary.get("entities_mentioned", [])
+                entities = [e if isinstance(e, str) else e.get("name", "") for e in raw_entities]
+                entities = [e for e in entities if e]
                 for entity in entities:
                     self._entity_docs[entity].add(doc_id)
 

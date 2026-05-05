@@ -1,4 +1,8 @@
-"""Docling-based document parser for PDF (text) and other supported formats."""
+"""Docling-based document parser for PDF (text) and other supported formats.
+
+Docling is optional — if not installed, parse() raises ImportError and the
+dispatcher falls back to PyMuPDF or VLM.
+"""
 
 from pathlib import Path
 
@@ -28,8 +32,19 @@ def _get_artifacts_path() -> Path | None:
     return None
 
 
+def _check_docling_available() -> None:
+    """Raise ImportError with a helpful message if docling is not installed."""
+    try:
+        import docling  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "Docling is not installed. Install with: pip install docling\n"
+            "PDF parsing will use PyMuPDF fallback instead."
+        )
+
+
 class DoclingParser:
-    """Parse documents using Docling."""
+    """Parse documents using Docling (optional dependency)."""
 
     def __init__(self):
         self._converter = None
@@ -39,6 +54,7 @@ class DoclingParser:
     def converter(self):
         """Lazy-init full DocumentConverter with OCR support."""
         if self._converter is None:
+            _check_docling_available()
             from docling.document_converter import DocumentConverter, PdfFormatOption
             from docling.datamodel.pipeline_options import PdfPipelineOptions
             from docling.datamodel.base_models import InputFormat
@@ -56,6 +72,7 @@ class DoclingParser:
     def converter_fast(self):
         """Lazy-init fast DocumentConverter (no OCR, no page images)."""
         if self._converter_fast is None:
+            _check_docling_available()
             from docling.document_converter import DocumentConverter, PdfFormatOption
             from docling.datamodel.pipeline_options import PdfPipelineOptions
             from docling.datamodel.base_models import InputFormat
@@ -80,6 +97,7 @@ class DoclingParser:
 
     def parse(self, file_path: str | Path, doc_id: str, kb_id: str, fast_mode: bool = False) -> ParsedDocument:
         """Parse a document and return Structured Markdown."""
+        _check_docling_available()
         path = Path(file_path)
         conv = self.converter_fast if fast_mode else self.converter
         result = conv.convert(str(path))

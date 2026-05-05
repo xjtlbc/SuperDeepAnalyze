@@ -185,78 +185,64 @@ export function CompileTab({ kbId, onCompileDone }: { kbId: string; onCompileDon
   })
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-2xl mx-auto">
+    <div className="compile-tab">
+      <div className="compile-tab__inner">
         {isPaused ? (
-          <button onClick={handleCompile} className="w-full px-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-lg font-medium transition-colors">
-            继续编译 (从断点恢复)
+          <button onClick={handleCompile} className="compile-tab__main-btn compile-tab__main-btn--resume">
+            {'继续编译 (从断点恢复)'}
           </button>
         ) : (
           <button
             onClick={compiling ? handlePause : handleCompile}
             disabled={!compiling && false}
-            className={`w-full px-6 py-4 rounded-xl text-lg font-medium transition-colors ${
-              compiling ? 'bg-orange-600 hover:bg-orange-700 text-white' : 'bg-amber-600 hover:bg-amber-700 text-white'
-            }`}
+            className={`compile-tab__main-btn ${compiling ? 'compile-tab__main-btn--pause' : 'compile-tab__main-btn--start'}`}
           >
-            {compiling ? <><PauseIcon className="w-4 h-4 inline-block mr-1" />暂停编译</> : '一键编译全部 (L0/L1/L2)'}
+            {compiling ? <><PauseIcon className="icon-sm" />{'暂停编译'}</> : '一键编译全部 (L0/L1/L2)'}
           </button>
         )}
 
         {compiling && compileProgress && (
-          <div className="mt-4 p-4 bg-white dark:bg-slate-800 rounded-lg border border-stone-200 dark:border-slate-700">
+          <div className="compile-tab__progress-card">
             {/* Stage indicators */}
-            <div className="flex items-center justify-between mb-3">
+            <div className="compile-tab__stages">
               {stages.map((stage, idx) => (
-                <div key={stage.key} className="flex flex-col items-center flex-1">
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
-                    idx < currentStageIndex ? 'bg-green-500 text-white' :
-                    idx === currentStageIndex ? 'bg-amber-500 text-white animate-pulse' :
-                    'bg-stone-200 dark:bg-slate-600 text-stone-400'
-                  }`}>
+                <div key={stage.key} className="compile-tab__stage">
+                  <div className={`compile-tab__stage-dot ${idx < currentStageIndex ? 'compile-tab__stage-dot--done' : idx === currentStageIndex ? 'compile-tab__stage-dot--active' : 'compile-tab__stage-dot--pending'}`}>
                     {idx < currentStageIndex ? '✓' : idx + 1}
                   </div>
-                  <span className={`text-xs mt-1 ${
-                    idx <= currentStageIndex ? 'text-stone-700 dark:text-stone-200' : 'text-stone-400'
-                  }`}>{stage.label}</span>
+                  <span className={`compile-tab__stage-label ${idx <= currentStageIndex ? 'compile-tab__stage-label--active' : ''}`}>{stage.label}</span>
                 </div>
               ))}
             </div>
 
             {/* Current phase message */}
-            <div className="flex items-center gap-2 text-sm mb-2">
-              {(() => { const IconComp = phaseIconMap[compileProgress.phase] || InfoIcon; return <IconComp className="w-5 h-5" /> })()}
-              <span className="text-stone-600 dark:text-stone-300 font-medium">{compileProgress.message}</span>
-              <span className="ml-auto text-amber-600 dark:text-amber-400 font-mono text-sm">{compileProgress.progress}%</span>
+            <div className="compile-tab__phase-row">
+              {(() => { const IconComp = phaseIconMap[compileProgress.phase] || InfoIcon; return <IconComp className="icon-sm" /> })()}
+              <span className="compile-tab__phase-message">{compileProgress.message}</span>
+              <span className="compile-tab__phase-percent">{compileProgress.progress}%</span>
             </div>
 
             {/* Progress bar */}
-            <div className="w-full bg-stone-200 dark:bg-slate-700 rounded-full h-2.5 overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-amber-400 to-amber-600 rounded-full transition-all duration-500 ease-out" style={{ width: `${compileProgress.progress}%` }} />
+            <div className="compile-tab__progress-bar-track">
+              <div className="compile-tab__progress-bar-fill" style={{ width: `${compileProgress.progress}%` }} />
             </div>
           </div>
         )}
 
         {compileLog.length > 0 && (
-          <div className="mt-4 bg-white dark:bg-slate-800 rounded-lg border border-stone-200 dark:border-slate-700 overflow-hidden">
-            <div className="px-3 py-2 bg-stone-50 dark:bg-slate-700/50 border-b border-stone-200 dark:border-slate-700 flex items-center justify-between">
-              <span className="text-xs font-medium text-stone-500 dark:text-stone-400">编译日志</span>
-              <span className="text-xs text-stone-400 dark:text-stone-500">{compileLog.length} 条</span>
+          <div className="compile-tab__log-card">
+            <div className="compile-tab__log-header">
+              <span className="compile-tab__log-title">{'编译日志'}</span>
+              <span className="compile-tab__log-count">{compileLog.length} {'条'}</span>
             </div>
-            <div className="max-h-64 overflow-y-auto p-2 space-y-1 text-xs">
+            <div className="compile-tab__log-list">
               {compileLog.map((log, i) => (
-                <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-stone-50 dark:hover:bg-slate-700/30">
-                  <span className="text-stone-400 dark:text-stone-500 font-mono w-16 flex-shrink-0">{log.time}</span>
-                  {(() => { const IconComp = phaseIconMap[log.phase] || InfoIcon; return <IconComp className="w-3.5 h-3.5" /> })()}
-                  <span className={`px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0 ${
-                    log.phase.includes('l0') ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' :
-                    log.phase.includes('l1') ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
-                    log.phase.includes('l2') ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' :
-                    log.phase === 'done' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' :
-                    'bg-stone-100 text-stone-600 dark:bg-slate-700 dark:text-stone-400'
-                  }`}>{phaseLabels[log.phase] || log.phase}</span>
-                  <span className="text-stone-600 dark:text-stone-300 flex-1 truncate">{log.message}</span>
-                  <span className="text-stone-400 dark:text-stone-500 font-mono w-10 text-right">{log.progress}%</span>
+                <div key={i} className="compile-tab__log-item">
+                  <span className="compile-tab__log-time">{log.time}</span>
+                  {(() => { const IconComp = phaseIconMap[log.phase] || InfoIcon; return <IconComp className="compile-tab__log-icon" /> })()}
+                  <span className={`compile-tab__log-phase-badge ${log.phase.includes('l0') ? 'compile-tab__log-phase-badge--l0' : log.phase.includes('l1') ? 'compile-tab__log-phase-badge--l1' : log.phase.includes('l2') ? 'compile-tab__log-phase-badge--l2' : log.phase === 'done' ? 'compile-tab__log-phase-badge--done' : 'compile-tab__log-phase-badge--default'}`}>{phaseLabels[log.phase] || log.phase}</span>
+                  <span className="compile-tab__log-msg">{log.message}</span>
+                  <span className="compile-tab__log-percent">{log.progress}%</span>
                 </div>
               ))}
               <div ref={logEndRef} />
@@ -265,16 +251,16 @@ export function CompileTab({ kbId, onCompileDone }: { kbId: string; onCompileDon
         )}
 
         {compileResult && (
-          <div className={`mt-4 p-4 rounded-lg text-sm ${compileResult.includes('完成') ? 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400 border border-green-200 dark:border-green-800' : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400 border border-red-200 dark:border-red-800'}`}>
+          <div className={`compile-tab__result ${compileResult.includes('完成') ? 'compile-tab__result--success' : 'compile-tab__result--error'}`}>
             {compileResult}
           </div>
         )}
 
         {!compiling && !compileResult && (
-          <div className="mt-8 text-center">
-            <CompileIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-            <p className="text-stone-500 dark:text-stone-400">点击按钮开始编译</p>
-            <p className="text-xs text-stone-400 dark:text-stone-500 mt-1">编译将执行 L2 分段索引 → L1 摘要生成 → L0 全局图谱构建</p>
+          <div className="compile-tab__idle">
+            <CompileIcon className="compile-tab__idle-icon" />
+            <p className="compile-tab__idle-text">{'点击按钮开始编译'}</p>
+            <p className="compile-tab__idle-hint">{'编译将执行 L2 分段索引 → L1 摘要生成 → L0 全局图谱构建'}</p>
           </div>
         )}
       </div>

@@ -2,14 +2,14 @@ import { PersonIcon, FolderIcon, ClockIcon, DatabaseIcon, InfoIcon, FileTextIcon
 
 function MapPinIcon({ className }: { className?: string }) {
   return (
-    <svg className={className || 'w-5 h-5'} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className={className || 'icon-sm'} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" />
       <circle cx="12" cy="10" r="3" />
     </svg>
   )
 }
 
-export function EntityTypeIcon({ type, className = 'w-4 h-4' }: { type: string; className?: string }) {
+export function EntityTypeIcon({ type, className = 'icon-sm' }: { type: string; className?: string }) {
   switch (type) {
     case 'person': return <PersonIcon className={className} />
     case 'location': return <MapPinIcon className={className} />
@@ -21,7 +21,7 @@ export function EntityTypeIcon({ type, className = 'w-4 h-4' }: { type: string; 
   }
 }
 
-export function GapIconRenderer({ type, className = 'w-5 h-5' }: { type: string; className?: string }) {
+export function GapIconRenderer({ type, className = 'icon-sm' }: { type: string; className?: string }) {
   switch (type) {
     case 'isolated_entity': return <ExternalLinkIcon className={className} />
     case 'missing_relation': return <AlertCircleIcon className={className} />

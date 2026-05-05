@@ -305,7 +305,7 @@ class AnalysisExtractor:
 
         # Summarize key entities and relations
         entity_summary = json.dumps([{"name": e["name"], "type": e.get("type")} for e in entities[:30]], ensure_ascii=False)
-        rel_summary = json.dumps([{"source": r["source"], "target": r["target"], "type": r["relation_type"]} for r in relations[:30]], ensure_ascii=False)
+        rel_summary = json.dumps([{"source": r.get("source", r.get("subject", "")), "target": r.get("target", r.get("object", "")), "type": r.get("relation_type", r.get("predicate", ""))} for r in relations[:30]], ensure_ascii=False)
         time_summary = json.dumps([{"time": t.get("time"), "desc": t.get("description")} for t in timeline[:20]], ensure_ascii=False)
 
         context = f"实体: {entity_summary}\n\n关系: {rel_summary}\n\n时间线: {time_summary}"

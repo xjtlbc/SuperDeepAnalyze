@@ -28,10 +28,10 @@ async function request<T>(path: string, options: FetchOptions = {}): Promise<T> 
 
 export interface ModelConfigResponse {
   configured: boolean;
-  main?: { base_url: string; model_name: string; max_tokens: number; dimension?: number };
-  lightweight?: { base_url: string; model_name: string; max_tokens: number; dimension?: number };
-  embedding?: { base_url: string; model_name: string; max_tokens: number; dimension?: number };
-  vlm?: { base_url: string; model_name: string; max_tokens: number; dimension?: number };
+  main?: { base_url: string; model_name: string; max_tokens: number; dimension?: number; provider_type?: string };
+  lightweight?: { base_url: string; model_name: string; max_tokens: number; dimension?: number; provider_type?: string };
+  embedding?: { base_url: string; model_name: string; max_tokens: number; dimension?: number; provider_type?: string };
+  vlm?: { base_url: string; model_name: string; max_tokens: number; dimension?: number; provider_type?: string };
 }
 
 interface TestConnectionResponse {
@@ -39,6 +39,22 @@ interface TestConnectionResponse {
   error?: string;
   model?: string;
   response_preview?: string;
+}
+
+export interface ProviderPreset {
+  id: string
+  name: string
+  adapter: string
+  base_url: string
+  is_local: boolean
+  features: string[]
+  models: Array<{
+    id: string
+    name: string
+    context_window: number
+    supports_tools: boolean
+    supports_vision: boolean
+  }>
 }
 
 export const api = {
@@ -49,9 +65,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
-  testConnection: (data: { base_url: string; model_name: string; api_key: string }) =>
+  testConnection: (data: { base_url: string; model_name: string; api_key: string; provider_type?: string }) =>
     request<TestConnectionResponse>('/api/models/test-connection', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  getPresets: () => request<ProviderPreset[]>('/api/models/presets'),
 };

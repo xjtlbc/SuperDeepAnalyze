@@ -14,20 +14,18 @@ FROM python:3.11-slim AS pip-builder
 
 WORKDIR /install
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install/deps -r requirements.txt && \
-    rm -rf /install/deps/lib/python3.11/site-packages/nvidia/ \
-           /install/deps/lib/python3.11/site-packages/triton/ \
-           /install/deps/lib/python3.11/site-packages/torch/lib/libcu* \
-           /install/deps/lib/python3.11/site-packages/torch/cuda/ \
-           /install/deps/lib/python3.11/site-packages/torch/include/ \
-           2>/dev/null; echo "CUDA stripped"
+# Install without docling/torch to keep image small (~1GB savings)
+RUN grep -v -e '^#' -e '^docling' -e '^torch' requirements.txt | grep -v '^$' > /tmp/deps.txt && \
+    pip install --timeout=300 --retries=5 -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com \
+    --no-cache-dir --prefix=/install/deps -r /tmp/deps.txt && \
+    echo "Deps installed without docling/torch"
 
 # ===== Stage 3: Runtime (CPU-only, small) =====
 FROM python:3.11-slim AS runtime
 
-# Install nginx and supervisor
+# Install nginx, supervisor, and libreoffice-writer for .doc support
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends nginx supervisor && \
+    apt-get install -y --no-install-recommends nginx supervisor libreoffice-writer antiword catdoc && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy stripped Python deps from builder
@@ -37,11 +35,6 @@ COPY --from=pip-builder /install/deps /usr/local
 WORKDIR /app/backend
 COPY backend/app/ ./app/
 COPY backend/pyproject.toml .
-
-# Download docling models (layout + table structure, ~506MB)
-RUN python3 -c "from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline; StandardPdfPipeline.download_models_hf()" && \
-    python3 -c "from docling.document_converter import DocumentConverter; DocumentConverter().download_models()" && \
-    echo "Docling models downloaded" || echo "Model download failed (build with local models if needed)"
 
 # Copy built frontend
 COPY --from=frontend-builder /build/dist/ /app/frontend/dist/
@@ -59,7 +52,7 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Create data directory skeleton
-RUN mkdir -p /app/data/logs /app/data/faiss /app/data/knowledge_bases
+RUN mkdir -p /app/data/logs /app/data/faiss /app/data/knowledge_bases /app/data/tool_outputs
 
 EXPOSE 80
 VOLUME ["/app/data"]

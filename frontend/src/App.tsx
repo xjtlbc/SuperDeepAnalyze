@@ -1,24 +1,87 @@
-import { useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { Sidebar } from './components/Sidebar'
+import React, { Component, Suspense, useEffect, useState } from 'react'
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { AppLayout } from './components/layout/AppLayout'
 import { ToastContainer } from './components/Toast'
 import { SearchDialog } from './components/SearchDialog'
-import { Settings as SettingsView } from './components/settings/SettingsView'
-import { KnowledgeBaseList } from './components/pages/KnowledgeBaseList'
-import { KnowledgeBaseDetail } from './components/pages/KnowledgeBaseDetail'
-import { DocumentDetail } from './components/pages/DocumentDetail'
-import { FolderIcon, GraphIcon, ChatIcon, WikiIcon, PlusIcon, ArrowRightIcon } from './components/Icons'
+import { useAppStore } from './store/app'
+
+// Lazy-loaded pages
+const KnowledgeBaseList = React.lazy(() => import('./components/pages/KnowledgeBaseList').then(m => ({ default: m.KnowledgeBaseList })))
+const KnowledgeBaseDetail = React.lazy(() => import('./components/pages/KnowledgeBaseDetail').then(m => ({ default: m.KnowledgeBaseDetail })))
+const DocumentDetail = React.lazy(() => import('./components/pages/DocumentDetail').then(m => ({ default: m.DocumentDetail })))
+const SettingsView = React.lazy(() => import('./components/settings/SettingsView').then(m => ({ default: m.Settings })))
+
+class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: string }> {
+  state = { hasError: false, error: '' }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message || 'Unknown error' }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 32, textAlign: 'center', color: '#333' }}>
+          <h2>页面出现错误</h2>
+          <p style={{ color: '#666', margin: '12px 0' }}>{this.state.error}</p>
+          <button
+            onClick={() => { this.setState({ hasError: false, error: '' }); window.location.reload() }}
+            style={{ padding: '8px 24px', background: '#4c6ef5', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}
+          >
+            刷新页面
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function LoadingFallback() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+      <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>加载中...</span>
+    </div>
+  )
+}
+
+function PageErrorBoundary({ children }: { children: React.ReactNode }) {
+  return <ErrorBoundary>{children}</ErrorBoundary>
+}
+
+function RedirectTo({ to }: { to: string }) {
+  // Substitute :params from the current URL into the target path
+  const currentHash = window.location.hash.replace('#/', '')
+  const targetPath = to.replace(/:(\w+)/g, (_match, key) => {
+    // Extract the corresponding segment from the current URL
+    const segments = currentHash.split('/')
+    const toSegments = to.split('/')
+    const idx = toSegments.findIndex(s => s === `:${key}`)
+    return idx >= 0 && idx < segments.length ? segments[idx] : `:${key}`
+  })
+  return <Navigate to={`/${targetPath}`} replace />
+}
+
+function NavigateToTab({ tab }: { tab: 'documents' | 'compile' | 'wiki' | 'graph' | 'chat' }) {
+  const stored = localStorage.getItem('currentKbId')
+  sessionStorage.setItem('pendingTab', tab)
+  if (stored) {
+    return <Navigate to={`/knowledge/${stored}`} replace />
+  }
+  return <Navigate to="/knowledge" replace />
+}
 
 function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <AppShell />
-    </BrowserRouter>
+    </HashRouter>
   )
 }
 
 function AppShell() {
   const [searchOpen, setSearchOpen] = useState(false)
+  const currentKbId = useAppStore((s) => s.currentKbId)
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -32,53 +95,32 @@ function AppShell() {
   }, [])
 
   return (
-    <div className="flex h-screen overflow-hidden bg-stone-50 dark:bg-slate-900">
-      <Sidebar />
-      <main className="flex-1 overflow-y-auto p-6">
+    <AppLayout>
+      <Suspense fallback={<LoadingFallback />}>
         <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/knowledge" element={<KnowledgeBaseList />} />
-          <Route path="/knowledge/:kbId" element={<KnowledgeBaseDetail />} />
-          <Route path="/knowledge/:kbId/documents/:docId" element={<DocumentDetail />} />
+          <Route path="/" element={<PageErrorBoundary><Home /></PageErrorBoundary>} />
+          <Route path="/knowledge" element={<PageErrorBoundary><KnowledgeBaseList /></PageErrorBoundary>} />
+          <Route path="/knowledge/:kbId" element={<PageErrorBoundary><KnowledgeBaseDetail /></PageErrorBoundary>} />
+          <Route path="/knowledge/:kbId/documents/:docId" element={<PageErrorBoundary><DocumentDetail /></PageErrorBoundary>} />
           <Route path="/upload" element={<NavigateToTab tab="documents" />} />
           <Route path="/graph" element={<NavigateToTab tab="graph" />} />
           <Route path="/chat" element={<NavigateToTab tab="chat" />} />
           <Route path="/wiki" element={<NavigateToTab tab="wiki" />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings" element={<PageErrorBoundary><Settings /></PageErrorBoundary>} />
+          {/* Aliases for common URL patterns */}
+          <Route path="/kb/:kbId" element={<RedirectTo to="/knowledge/:kbId" />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </main>
+      </Suspense>
       <ToastContainer />
-      <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
-    </div>
+      <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} kbId={currentKbId || undefined} />
+    </AppLayout>
   )
 }
 
-/**
- * Route handler for /graph, /chat, /wiki — stores target tab, then navigates
- * to the current KB's detail page, or to the KB list if no KB is selected.
- */
-function NavigateToTab({ tab }: { tab: 'documents' | 'compile' | 'wiki' | 'graph' | 'chat' }) {
-  const navigate = useNavigate()
-  const location = useLocation()
-
-  // Read current KB from localStorage (set by app store)
-  const stored = localStorage.getItem('currentKbId')
-
-  if (stored) {
-    sessionStorage.setItem('pendingTab', tab)
-    navigate(`/knowledge/${stored}`, { replace: true })
-  } else {
-    sessionStorage.setItem('pendingTab', tab)
-    navigate('/knowledge', { replace: true, state: { from: location.pathname } })
-  }
-
-  return null
-}
-
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+const API_BASE = (import.meta as any).env?.VITE_API_BASE || ''
 
 function Home() {
-  const navigate = useNavigate()
   const [stats, setStats] = useState<{ kbs: number; docs: number } | null>(null)
 
   useEffect(() => {
@@ -94,126 +136,93 @@ function Home() {
   }, [])
 
   const features = [
-    {
-      title: '知识库管理',
-      desc: '上传卷宗文档，管理案件材料，构建结构化知识库',
-      Icon: FolderIcon,
-      to: '/knowledge',
-      accent: 'from-blue-500 to-indigo-600',
-      bg: 'bg-blue-50 dark:bg-blue-900/20',
-      text: 'text-blue-700 dark:text-blue-400',
-    },
-    {
-      title: '关系图谱',
-      desc: '实体关联关系可视化，事件脉络一目了然',
-      Icon: GraphIcon,
-      to: '/graph',
-      accent: 'from-emerald-500 to-teal-600',
-      bg: 'bg-emerald-50 dark:bg-emerald-900/20',
-      text: 'text-emerald-700 dark:text-emerald-400',
-    },
-    {
-      title: '智能对话',
-      desc: '基于案情数据的多跳推理问答，深度挖掘信息',
-      Icon: ChatIcon,
-      to: '/chat',
-      accent: 'from-violet-500 to-purple-600',
-      bg: 'bg-violet-50 dark:bg-violet-900/20',
-      text: 'text-violet-700 dark:text-violet-400',
-    },
-    {
-      title: '案情 Wiki',
-      desc: '自动生成结构化案件百科，支持交叉引用与溯源',
-      Icon: WikiIcon,
-      to: '/wiki',
-      accent: 'from-amber-500 to-orange-600',
-      bg: 'bg-amber-50 dark:bg-amber-900/20',
-      text: 'text-amber-700 dark:text-amber-400',
-    },
+    { title: '知识库管理', desc: '上传卷宗文档，管理案件材料，构建结构化知识库', to: '/knowledge', color: '#4c6ef5' },
+    { title: '关系图谱', desc: '实体关联关系可视化，事件脉络一目了然', to: '/graph', color: '#2f9e44' },
+    { title: '智能对话', desc: '基于案情数据的多跳推理问答，深度挖掘信息', to: '/chat', color: '#7950f2' },
+    { title: '案情 Wiki', desc: '自动生成结构化案件百科，支持交叉引用与溯源', to: '/wiki', color: '#e8590c' },
   ]
 
-  const handleFeatureClick = (to: string) => {
-    if (to === '/knowledge') {
-      navigate(to)
-    } else {
-      const stored = localStorage.getItem('currentKbId')
-      const tab = to.slice(1) // 'graph', 'chat', 'wiki'
-      sessionStorage.setItem('pendingTab', tab)
-      if (stored) {
-        navigate(`/knowledge/${stored}`)
-      } else {
-        navigate('/knowledge', { state: { from: to } })
-      }
-    }
-  }
-
   return (
-    <div className="max-w-4xl mx-auto animate-fade-in">
-      {/* Hero */}
-      <div className="text-center mb-12 pt-8">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary-50 dark:bg-primary-900/30 text-xs font-medium text-primary-700 dark:text-primary-400 mb-6">
-          <span className="w-1.5 h-1.5 rounded-full bg-primary-500" />
+    <div style={{ maxWidth: 900, margin: '0 auto', padding: '48px 24px' }}>
+      <div style={{ textAlign: 'center', marginBottom: 48 }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '4px 14px', borderRadius: 20, background: 'var(--accent-subtle)', fontSize: 13, color: 'var(--accent)', marginBottom: 20 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)' }} />
           卷宗深度分析引擎
         </div>
-        <h1 className="text-4xl font-bold text-slate-800 dark:text-slate-100 mb-3 tracking-tight">
+        <h1 style={{ fontSize: 30, fontWeight: 700, margin: '0 0 8px', color: 'var(--text)' }}>
           SuperDeepAnalyze
         </h1>
-        <p className="text-lg text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
+        <p style={{ fontSize: 14, color: 'var(--text-secondary)', margin: 0 }}>
           面向公安、检察院、法院的智能卷宗分析系统，支持多层级检索、关系图谱与案情推理
         </p>
       </div>
 
-      {/* Stats (if has data) */}
       {stats && stats.kbs > 0 && (
-        <div className="flex justify-center gap-8 mb-12">
-          <div className="text-center">
-            <p className="text-3xl font-bold text-slate-800 dark:text-slate-100">{stats.kbs}</p>
-            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">知识库</p>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 32, marginBottom: 40 }}>
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ fontSize: 28, fontWeight: 700, margin: 0, color: 'var(--accent)' }}>{stats.kbs}</p>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>知识库</p>
           </div>
-          <div className="w-px bg-slate-200 dark:bg-slate-700" />
-          <div className="text-center">
-            <p className="text-3xl font-bold text-slate-800 dark:text-slate-100">{stats.docs}</p>
-            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">文档数</p>
+          <div style={{ width: 1, background: 'var(--border)' }} />
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ fontSize: 28, fontWeight: 700, margin: 0, color: 'var(--accent)' }}>{stats.docs}</p>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>文档数</p>
           </div>
         </div>
       )}
 
-      {/* Feature Cards */}
-      <div className="grid grid-cols-2 gap-4 mb-12">
-        {features.map(({ title, desc, Icon, to, bg, text }) => (
-          <button
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16, marginBottom: 40 }}>
+        {features.map(({ title, desc, to, color }) => (
+          <a
             key={title}
-            onClick={() => handleFeatureClick(to)}
-            className="group text-left p-5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:shadow-lg hover:border-slate-300 dark:hover:border-slate-600 transition-all duration-300 hover:-translate-y-0.5"
+            href={`#${to}`}
+            style={{
+              display: 'block',
+              padding: 20,
+              borderRadius: 12,
+              border: '1px solid var(--border)',
+              background: 'var(--bg)',
+              textDecoration: 'none',
+              color: 'inherit',
+              transition: 'box-shadow 0.15s ease, transform 0.15s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.boxShadow = 'var(--shadow-md)'
+              e.currentTarget.style.transform = 'translateY(-2px)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.boxShadow = 'none'
+              e.currentTarget.style.transform = 'translateY(0)'
+            }}
           >
-            <div className={`w-10 h-10 rounded-lg ${bg} flex items-center justify-center mb-3 group-hover:scale-110 transition-transform duration-300`}>
-              <Icon className={`w-5 h-5 ${text}`} />
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: `${color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
+              <div style={{ width: 16, height: 16, borderRadius: 4, background: color }} />
             </div>
-            <h3 className="font-semibold text-slate-800 dark:text-slate-100 mb-1 text-sm">
-              {title}
-            </h3>
-            <p className="text-xs text-slate-400 dark:text-slate-500 leading-relaxed mb-3">
-              {desc}
-            </p>
-            <span className={`inline-flex items-center gap-1 text-xs font-medium ${text} opacity-0 group-hover:opacity-100 transition-opacity duration-200`}>
-              进入 <ArrowRightIcon className="w-3 h-3" />
-            </span>
-          </button>
+            <h3 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 4px', color: 'var(--text)' }}>{title}</h3>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>{desc}</p>
+          </a>
         ))}
       </div>
 
-      {/* Quick Start */}
-      <div className="text-center pb-8">
-        <p className="text-sm text-slate-400 dark:text-slate-500 mb-4">
-          首次使用？从创建知识库开始
-        </p>
-        <button
-          onClick={() => navigate('/knowledge')}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-xl text-sm font-medium transition-all duration-200 hover:shadow-md active:scale-95"
+      <div style={{ textAlign: 'center' }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>首次使用？从创建知识库开始</p>
+        <a
+          href="#/knowledge"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '8px 20px',
+            borderRadius: 8,
+            background: 'var(--accent)',
+            color: '#fff',
+            fontSize: 14,
+            fontWeight: 500,
+            textDecoration: 'none',
+          }}
         >
-          <PlusIcon className="w-4 h-4" />
-          新建知识库
-        </button>
+          + 新建知识库
+        </a>
       </div>
     </div>
   )

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import json
 import asyncio
+import logging
 from pathlib import Path
 
 from app.config import settings
@@ -12,6 +13,8 @@ from app.services.wiki.analysis.report import AnalysisReport
 from app.services.wiki.catalog.storage import load_catalog, get_leaf_pages
 from app.services.wiki.pages.storage import list_pages, load_page
 from app.services.wiki.enrichment.parser import has_wikilink, WIKILINK_PATTERN
+
+logger = logging.getLogger("app.wiki.enrichment.linker")
 
 ENRICH_SYSTEM_PROMPT = """你是一个wikilink插入助手。你的任务是识别文本中应该插入wikilink的位置。
 
@@ -31,6 +34,12 @@ ENRICH_USER_PROMPT = """请为以下页面内容插入wikilink。
 
 请输出应该插入的wikilink列表：[{{"term": "术语", "target": "页面路径"}}, ...]"""
 
+# Per-page LLM timeout in seconds
+_PAGE_TIMEOUT = 60
+
+# Maximum concurrent page enrichments
+_MAX_CONCURRENCY = 3
+
 
 class WikilinkEnricher:
     """Enrich wiki pages with safe wikilink insertions."""
@@ -39,8 +48,83 @@ class WikilinkEnricher:
         self._llm_client = llm_client
         self._report = report
 
+    async def _enrich_single_page(
+        self,
+        kb_id: str,
+        page_info: dict,
+        available: list[str],
+        semaphore: asyncio.Semaphore,
+        page_idx: int,
+        total_pages: int,
+    ) -> int:
+        """Enrich a single page with wikilinks. Returns number of links added."""
+        async with semaphore:
+            content = load_page(kb_id, page_info["path"])
+            if not content:
+                return 0
+
+            existing = set()
+            for m in WIKILINK_PATTERN.finditer(content):
+                existing.add(m.group(1).strip())
+
+            entity_names = [e.name for e in self._report.entities if e.name not in existing]
+            if not entity_names:
+                return 0
+
+            prompt = ENRICH_USER_PROMPT.format(
+                available_pages=", ".join(available),
+                page_content=content[:3000],
+            )
+            messages = [
+                {"role": "system", "content": ENRICH_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+
+            try:
+                response = await asyncio.wait_for(
+                    self._llm_client.chat(
+                        RoleType.LIGHTWEIGHT, messages, temperature=0.1,
+                    ),
+                    timeout=_PAGE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Wikilink enrichment timed out (%ds) for page %s (%d/%d), skipping",
+                    _PAGE_TIMEOUT, page_info.get("path", "?"), page_idx + 1, total_pages,
+                )
+                return 0
+
+            llm_text = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            replacements = self._extract_json_list(llm_text)
+
+            new_content = content
+            links_added = 0
+            for r in replacements:
+                term = r.get("term", "")
+                target = r.get("target", "")
+                if term and target:
+                    pattern = r'(?<!\[)(?<!\|)\b' + re.escape(term) + r'\b(?![^\[]*\]\])'
+                    replacement = f'[[{target}|{term}]]'
+                    new_content, count = re.subn(pattern, replacement, new_content, count=1)
+                    links_added += count
+
+            if links_added > 0 and new_content != content:
+                if new_content.startswith("---"):
+                    try:
+                        end = new_content.index("---", 3)
+                        new_content = new_content[:end + 3] + new_content[end + 3:]
+                    except ValueError:
+                        pass
+
+                page_dir = settings.KB_DIR / kb_id / "wiki" / "pages"
+                safe_name = page_info["path"].replace("/", "_").replace("\\", "_")
+                page_path = page_dir / f"{safe_name}.md"
+                page_path.write_text(new_content, encoding="utf-8")
+
+            return links_added
+
     async def enrich_all(self, kb_id: str, progress_cb=None) -> int:
-        """Enrich all wiki pages."""
+        """Enrich all wiki pages with concurrent processing and per-page resilience."""
         pages = list_pages(kb_id)
         if not pages:
             return 0
@@ -55,76 +139,51 @@ class WikilinkEnricher:
         if progress_cb:
             await _cb(progress_cb, {"phase": "enrichment", "message": f"开始为 {len(pages)} 个页面插入wikilink"})
 
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
         total_links = 0
-        for i, page_info in enumerate(pages):
-            content = load_page(kb_id, page_info["path"])
-            if not content:
-                continue
+        completed = 0
+        failed = 0
 
-            existing = set()
-            for m in WIKILINK_PATTERN.finditer(content):
-                existing.add(m.group(1).strip())
-
-            entity_names = [e.name for e in self._report.entities if e.name not in existing]
-            if not entity_names:
-                continue
-
-            prompt = ENRICH_USER_PROMPT.format(
-                available_pages=", ".join(available),
-                page_content=content[:3000],
-            )
-            messages = [
-                {"role": "system", "content": ENRICH_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ]
-
+        async def _run_page(idx: int, page_info: dict) -> int:
+            nonlocal completed, failed
             try:
-                response = await self._llm_client.chat(
-                    RoleType.LIGHTWEIGHT, messages, temperature=0.1,
+                links = await self._enrich_single_page(
+                    kb_id, page_info, available, semaphore, idx, len(pages),
                 )
-                llm_text = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-                replacements = self._extract_json_list(llm_text)
+                completed += 1
+                return links
+            except Exception as exc:
+                failed += 1
+                completed += 1
+                logger.error(
+                    "Wikilink enrichment failed for page %s (%d/%d): %s",
+                    page_info.get("path", "?"), idx + 1, len(pages), exc,
+                )
+                return 0
 
-                new_content = content
-                links_added = 0
-                for r in replacements:
-                    term = r.get("term", "")
-                    target = r.get("target", "")
-                    if term and target:
-                        pattern = r'(?<!\[)(?<!\|)\b' + re.escape(term) + r'\b(?![^\[]*\]\])'
-                        replacement = f'[[{target}|{term}]]'
-                        new_content, count = re.subn(pattern, replacement, new_content, count=1)
-                        links_added += count
+        tasks = [
+            asyncio.create_task(_run_page(i, page_info))
+            for i, page_info in enumerate(pages)
+        ]
 
-                if links_added > 0 and new_content != content:
-                    fm = page_info.get("frontmatter", {})
-                    from app.services.wiki.pages.templates import render_page
+        # Process tasks as they complete for progress reporting
+        for coro in asyncio.as_completed(tasks):
+            try:
+                links = await coro
+                total_links += links
+            except Exception as exc:
+                logger.error("Wikilink enrichment task failed unexpectedly: %s", exc)
 
-                    if new_content.startswith("---"):
-                        try:
-                            end = new_content.index("---", 3)
-                            new_content = new_content[:end + 3] + new_content[end + 3:]
-                        except ValueError:
-                            pass
-
-                    page_dir = settings.KB_DIR / kb_id / "wiki" / "pages"
-                    safe_name = page_info["path"].replace("/", "_").replace("\\", "_")
-                    page_path = page_dir / f"{safe_name}.md"
-                    page_path.write_text(new_content, encoding="utf-8")
-                    total_links += links_added
-
-                if progress_cb and (i + 1) % 10 == 0:
-                    await _cb(progress_cb, {
-                        "phase": "enrichment",
-                        "message": f"已处理 {i+1}/{len(pages)} 个页面，新增 {total_links} 个链接",
-                    })
-            except Exception:
-                pass
+            if progress_cb and completed % 10 == 0:
+                await _cb(progress_cb, {
+                    "phase": "enrichment",
+                    "message": f"已处理 {completed}/{len(pages)} 个页面，新增 {total_links} 个链接 (失败 {failed})",
+                })
 
         if progress_cb:
             await _cb(progress_cb, {
                 "phase": "enrichment",
-                "message": f"wikilink增强完成，共插入 {total_links} 个链接",
+                "message": f"wikilink增强完成，共插入 {total_links} 个链接 (失败 {failed})",
             })
 
         return total_links

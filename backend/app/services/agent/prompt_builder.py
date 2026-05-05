@@ -17,10 +17,18 @@ _DOMAIN_PROFILES = {
 }
 
 
-def build_system_prompt(kb_id: str, query_type: str = "") -> str:
-    """Build domain-adaptive system prompt with modular sections."""
+def build_system_prompt(kb_id: str, query_type: str = "", kb_state=None) -> str:
+    """Build domain-adaptive system prompt with modular sections.
+
+    If kb_state is provided, adjusts guidance based on compilation level.
+    """
     domain = detect_kb_domain(kb_id)
     identity, domain_guidance = _DOMAIN_PROFILES.get(domain, _DOMAIN_PROFILES[GENERAL])
+
+    # Compilation state modifications
+    state_mods = ""
+    if kb_state:
+        state_mods = kb_state.get_system_prompt_mods()
 
     return f"""你是{identity}。
 
@@ -47,23 +55,45 @@ def build_system_prompt(kb_id: str, query_type: str = "") -> str:
 
 <section id="tools">
 ## 可用工具
-- `search_vector`: 语义向量搜索（FAISS），支持 L0/L1/L2 各层
+### 核心工具（始终可用）
 - `search_keyword`: 关键词全文搜索（FTS5），支持 L1/L2
+- `assess_complexity`: 评估问题复杂度
+- `report_findings`: 输出最终分析结论（必须包含 `evidence_refs` 引用）
+- `tool_discover`: 发现并加载高级分析工具（实体追踪、时间线、渐进式搜索等）
+- `batch_expand_abstracts`: 一次获取所有文档的125-token摘要概览（强烈推荐首次使用）
+- `recall_grep`: 在已压缩的上下文中搜索关键词
+- `recall_expand`: 展开被压缩的摘要节点
+- `recall_describe`: 查看某个摘要节点的内容
+
+### 高级工具（通过 `tool_discover` 按需加载）
+- `search_vector`: 语义向量搜索（FAISS），支持 L0/L1/L2 各层
 - `read_l0`: 读取全局实体库/关系/时间线/事件图
 - `read_l1`: 读取段落摘要（含实体关系和矛盾标注）
 - `read_l2`: 读取原始文本片段（谨慎使用，仅在需要原文时调用）
 - `expand_entity`: 展开实体的完整链路（L0信息 → L1提及 → L2来源片段）
 - `get_timeline`: 获取时间线事件（支持时间范围过滤）
 - `progressive_search`: 智能搜索，自动选择层级并逐层深入
-- `assess_complexity`: 评估问题复杂度
-- `recall_grep`: 在已压缩的上下文中搜索关键词
-- `recall_expand`: 展开被压缩的摘要节点
-- `recall_describe`: 查看某个摘要节点的内容
-- `report_findings`: 输出最终分析结论（必须包含 `evidence_refs` 引用）
+- `batch_expand_l1`: 批量读取多个文档的L1摘要（高效，一次最多10个文档）
+- `read_section`: 读取指定文档的特定段落摘要（精确阅读）
+
+### 工作流工具（通过 `tool_discover` 加载）
+- `workflow_pipeline`: 顺序执行多步分析管道，每步结果传递给下一步
+- `workflow_parallel`: 并行执行独立子任务，结果最终综合
+- `workflow_verify`: 对关键结论进行对抗性验证（搜索支持和反对证据）
+
+**提示**: 如果需要以上高级工具，调用一次 `tool_discover` 即可全部加载，之后可直接使用。
+
+## 多文档分析工作流（重要！）
+面对"总结所有文档"、"对比各文档中关于X的描述"等跨文档问题时，按以下流程：
+1. `batch_expand_abstracts` → 获取所有文档概览，判断哪些文档相关
+2. `batch_expand_l1` → 批量读取相关文档的详细摘要
+3. `read_section` → 对特定段落精确阅读
+4. 如果有矛盾，用 `read_l2` 读取原文验证
+5. `report_findings` → 输出综合分析结论
 
 ## 工具使用优先级
-1. **第一步**: `read_l0` 获取全局概览，或 `progressive_search` 快速定位
-2. **深入阶段**: `expand_entity` 追踪关系链，`read_l1` 获取细节
+1. **第一步**: `batch_expand_abstracts` 获取全局文档概览
+2. **深入阶段**: `batch_expand_l1` 批量读取相关文档，`expand_entity` 追踪关系链
 3. **验证阶段**: `read_l2` 读取原文验证矛盾，`recall_*` 找回被压缩的信息
 4. **输出阶段**: `report_findings` 附带完整证据引用
 </section>
@@ -107,9 +137,9 @@ evidence_refs: [
 
 <section id="context_management">
 ## 上下文管理
-- 系统会自动压缩较早的工具结果以防止上下文溢出
+- 系统会自动压缩较大的工具结果以防止上下文溢出
+- 被压缩的结果可通过 `recall_expand` 找回
 - 关键发现（实体、关系、时间线事件）始终被保留
-- 如果早期结果已被压缩，使用 `recall_grep`、`recall_expand`、`recall_describe` 找回信息
 - 不要重复搜索已获得的信息
 </section>
 
@@ -120,4 +150,5 @@ evidence_refs: [
 - 重复的工具+参数调用会被跳过 → 换不同的搜索角度
 - 始终给出最终答案，即使不完整 — 注明无法验证的部分
 </section>
+{state_mods}
 """

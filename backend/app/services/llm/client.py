@@ -124,4 +124,18 @@ class LLMClient:
                     except json.JSONDecodeError:
                         pass
 
-        return {"raw": content}
+        # Fallback: try to find JSON anywhere in the response
+        json_match = _extract_json_object(content)
+        if json_match:
+            try:
+                return json.loads(json_match)
+            except json.JSONDecodeError:
+                pass
+
+        # Final fallback: wrap raw text as summary
+        return {
+            "summary": content[:2000] if content else "",
+            "entities_mentioned": [],
+            "relations": [],
+            "contradictions": [],
+        }

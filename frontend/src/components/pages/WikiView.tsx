@@ -48,14 +48,14 @@ interface TimelineEvent {
 
 function MapPinIcon({ className }: { className?: string }) {
   return (
-    <svg className={className || 'w-5 h-5'} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className={className || 'icon-sm'} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" />
       <circle cx="12" cy="10" r="3" />
     </svg>
   )
 }
 
-function EntityTypeIcon({ type, className = 'w-4 h-4' }: { type: string; className?: string }) {
+function EntityTypeIcon({ type, className = 'icon-sm' }: { type: string; className?: string }) {
   switch (type) {
     case 'person': return <PersonIcon className={className} />
     case 'location': return <MapPinIcon className={className} />
@@ -207,24 +207,24 @@ export function WikiView() {
 
   if (kbs.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full">
-        <WikiIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-        <p className="text-stone-600 dark:text-stone-300 font-medium">暂无知识库，请先创建</p>
+      <div className="wiki-view__empty-state">
+        <WikiIcon className="wiki-view__empty-icon" />
+        <p className="wiki-view__empty-text">{'暂无知识库，请先创建'}</p>
       </div>
     )
   }
 
   if (!currentKbId) {
     return (
-      <div className="flex flex-col items-center justify-center h-full">
-        <WikiIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-        <p className="text-stone-600 dark:text-stone-300 font-medium mb-4">选择知识库查看 Wiki</p>
+      <div className="wiki-view__empty-state">
+        <WikiIcon className="wiki-view__empty-icon" />
+        <p className="wiki-view__empty-text wiki-view__empty-text--mb">{'选择知识库查看 Wiki'}</p>
         <select
           value=""
           onChange={(e) => setCurrentKbId(e.target.value)}
-          className="px-4 py-2 rounded-lg border border-stone-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 text-sm"
+          className="wiki-view__select"
         >
-          <option value="">请选择...</option>
+          <option value="">{'请选择...'}</option>
           {kbs.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
         </select>
       </div>
@@ -232,29 +232,29 @@ export function WikiView() {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="wiki-view">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="wiki-view__header">
         <div>
-          <h1 className="text-2xl font-bold text-stone-800 dark:text-stone-100">知识 Wiki</h1>
+          <h1 className="wiki-view__title">{'知识 Wiki'}</h1>
           {overview && (
-            <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">
-              {overview.entity_count} 实体 · {overview.timeline_count} 时间线事件
+            <p className="wiki-view__subtitle">
+              {overview.entity_count} {'实体 ·'} {overview.timeline_count} {'时间线事件'}
             </p>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="wiki-view__header-actions">
           <select
             value={currentKbId}
             onChange={(e) => { setCurrentKbId(e.target.value); setSelectedEntity(null) }}
-            className="px-3 py-1.5 rounded-lg border border-stone-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 text-xs"
+            className="wiki-view__select wiki-view__select--xs"
           >
             {kbs.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
           </select>
           <button
             onClick={fetchWiki}
             disabled={loading}
-            className="px-3 py-1.5 bg-stone-100 hover:bg-stone-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-stone-600 dark:text-stone-300 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+            className="wiki-view__refresh-btn"
           >
             {loading ? '加载中...' : '刷新'}
           </button>
@@ -262,62 +262,46 @@ export function WikiView() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 flex gap-4 min-h-0">
+      <div className="wiki-view__content">
         {/* Sidebar */}
-        <div className="w-72 bg-white dark:bg-slate-800 rounded-xl border border-stone-200 dark:border-slate-700 flex flex-col overflow-hidden">
+        <div className="wiki-view__sidebar">
           {/* Tabs */}
-          <div className="flex border-b border-stone-200 dark:border-slate-700">
+          <div className="wiki-view__sidebar-tabs">
             <button
               onClick={() => { setActiveTab('overview'); setSelectedEntity(null); setSelectedPageContent(null) }}
-              className={`flex-1 px-4 py-2.5 text-xs font-medium transition-colors ${
-                activeTab === 'overview'
-                  ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border-b-2 border-amber-500'
-                  : 'text-stone-500 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700'
-              }`}
+              className={`wiki-view__sidebar-tab ${activeTab === 'overview' ? 'wiki-view__sidebar-tab--active' : ''}`}
             >
-              概览
+              {'概览'}
             </button>
             {catalog ? (
               <button
                 onClick={() => { setActiveTab('wiki-pages'); setSelectedEntity(null); setSelectedPageContent(null) }}
-                className={`flex-1 px-4 py-2.5 text-xs font-medium transition-colors ${
-                  activeTab === 'wiki-pages'
-                    ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border-b-2 border-amber-500'
-                    : 'text-stone-500 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700'
-                }`}
+                className={`wiki-view__sidebar-tab ${activeTab === 'wiki-pages' ? 'wiki-view__sidebar-tab--active' : ''}`}
               >
-                页面
+                {'页面'}
               </button>
             ) : (
               <button
                 onClick={() => { setActiveTab('entities'); setSelectedEntity(null) }}
-                className={`flex-1 px-4 py-2.5 text-xs font-medium transition-colors ${
-                  activeTab === 'entities'
-                    ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border-b-2 border-amber-500'
-                    : 'text-stone-500 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700'
-                }`}
+                className={`wiki-view__sidebar-tab ${activeTab === 'entities' ? 'wiki-view__sidebar-tab--active' : ''}`}
               >
-                实体
+                {'实体'}
               </button>
             )}
             <button
               onClick={() => { setActiveTab('timeline'); setSelectedEntity(null); fetchTimeline() }}
-              className={`flex-1 px-4 py-2.5 text-xs font-medium transition-colors ${
-                activeTab === 'timeline'
-                  ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border-b-2 border-amber-500'
-                  : 'text-stone-500 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700'
-              }`}
+              className={`wiki-view__sidebar-tab ${activeTab === 'timeline' ? 'wiki-view__sidebar-tab--active' : ''}`}
             >
-              时间线
+              {'时间线'}
             </button>
           </div>
 
           {/* Entity tree */}
-          <div className="flex-1 overflow-y-auto p-2">
+          <div className="wiki-view__sidebar-body">
             {/* Wiki pages catalog tree */}
             {activeTab === 'wiki-pages' && catalog && (
-              <div className="space-y-1">
-                <div className="px-3 py-2 text-xs font-semibold text-stone-500 dark:text-stone-400 uppercase tracking-wide">
+              <div className="wiki-view__catalog">
+                <div className="wiki-view__catalog-title">
                   {catalog.title}
                 </div>
                 {/* Render catalog pages recursively */}
@@ -331,11 +315,7 @@ export function WikiView() {
                         <button
                           key={page.path}
                           onClick={() => loadWikiPage(page.path)}
-                          className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors ${
-                            selectedPagePath === page.path
-                              ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'
-                              : 'text-stone-500 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700'
-                          }`}
+                          className={`wiki-view__catalog-page ${selectedPagePath === page.path ? 'wiki-view__catalog-page--active' : ''}`}
                           style={{ paddingLeft: `${12 + depth * 12}px` }}
                         >
                           {page.title || page.path}
@@ -345,9 +325,9 @@ export function WikiView() {
                     for (const child of children) {
                       const childItems = renderCatalogNode(child, depth + 1)
                       items.push(
-                        <div key={child.path || child.title} className="mt-1">
+                        <div key={child.path || child.title} className="wiki-view__catalog-section">
                           <div
-                            className="px-3 py-1 text-xs font-medium text-stone-400 dark:text-stone-500"
+                            className="wiki-view__catalog-section-title"
                             style={{ paddingLeft: `${12 + depth * 12}px` }}
                           >
                             {child.title}
@@ -364,32 +344,28 @@ export function WikiView() {
             )}
 
             {activeTab === 'entities' && loading && (
-              <div className="flex items-center justify-center py-8">
-                <div className="animate-spin rounded-full h-5 w-5 border-2 border-amber-500 border-t-transparent"></div>
+              <div className="wiki-view__loading">
+                <div className="chat-spinner chat-spinner--accent"></div>
               </div>
             )}
 
             {activeTab === 'entities' && !loading && !overview && (
-              <p className="text-xs text-stone-400 dark:text-stone-500 text-center py-8">暂无 Wiki 数据</p>
+              <p className="wiki-view__empty-hint">{'暂无 Wiki 数据'}</p>
             )}
 
             {activeTab === 'entities' && !loading && overview && overview.entity_count === 0 && (
-              <p className="text-xs text-stone-400 dark:text-stone-500 text-center py-8">暂无实体数据</p>
+              <p className="wiki-view__empty-hint">{'暂无实体数据'}</p>
             )}
 
             {activeTab === 'entities' && overview && overview.entity_count > 0 && (
-              <div className="space-y-1">
+              <div className="wiki-view__entity-list">
                 {/* All entities */}
                 <button
                   onClick={() => { setFilterType('all'); setSelectedEntity(null) }}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-colors ${
-                    filterType === 'all'
-                      ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'
-                      : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700'
-                  }`}
+                  className={`wiki-view__entity-group-btn ${filterType === 'all' ? 'wiki-view__entity-group-btn--active' : ''}`}
                 >
-                  <span className="font-medium">全部实体</span>
-                  <span className="text-stone-400 dark:text-stone-500">{overview.entity_count}</span>
+                  <span className="font-medium">{'全部实体'}</span>
+                  <span className="wiki-view__entity-count">{overview.entity_count}</span>
                 </button>
 
                 {/* Type groups */}
@@ -397,26 +373,22 @@ export function WikiView() {
                   <div key={type}>
                     <button
                       onClick={() => toggleType(type)}
-                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700 transition-colors"
+                      className="wiki-view__entity-group-btn"
                     >
-                      <span className={`transition-transform ${expandedTypes.has(type) ? 'rotate-90' : ''}`}>▸</span>
-                      <EntityTypeIcon type={type} className="w-4 h-4" />
-                      <span className="flex-1 text-left">{TYPE_LABELS[type] || type}</span>
-                      <span className="text-stone-400 dark:text-stone-500">{count}</span>
+                      <span className={`wiki-view__chevron ${expandedTypes.has(type) ? 'wiki-view__chevron--expanded' : ''}`}>{'▸'}</span>
+                      <EntityTypeIcon type={type} className="icon-sm" />
+                      <span className="wiki-view__entity-group-label">{TYPE_LABELS[type] || type}</span>
+                      <span className="wiki-view__entity-count">{count}</span>
                     </button>
                     {expandedTypes.has(type) && (
-                      <div className="ml-4 space-y-0.5 mt-0.5">
+                      <div className="wiki-view__entity-sub-list">
                         {overview.entities
                           .filter(e => e.type === type)
                           .map(e => (
                             <button
                               key={e.id}
                               onClick={() => fetchEntity(e.id)}
-                              className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors truncate ${
-                                selectedEntity?.id === e.id
-                                  ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'
-                                  : 'text-stone-500 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700'
-                              }`}
+                              className={`wiki-view__entity-item ${selectedEntity?.id === e.id ? 'wiki-view__entity-item--active' : ''}`}
                             >
                               {e.name}
                             </button>
@@ -429,26 +401,26 @@ export function WikiView() {
             )}
 
             {activeTab === 'timeline' && (
-              <div className="space-y-2">
+              <div className="wiki-view__timeline-sidebar">
                 {loading && (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="animate-spin rounded-full h-5 w-5 border-2 border-amber-500 border-t-transparent"></div>
+                  <div className="wiki-view__loading">
+                    <div className="chat-spinner chat-spinner--accent"></div>
                   </div>
                 )}
                 {!loading && timeline.length === 0 && (
-                  <p className="text-xs text-stone-400 dark:text-stone-500 text-center py-8">暂无时间线事件</p>
+                  <p className="wiki-view__empty-hint">{'暂无时间线事件'}</p>
                 )}
                 {timeline.map((ev, i) => (
-                  <div key={i} className="relative pl-4 border-l-2 border-amber-300 dark:border-amber-700">
-                    <div className="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-amber-400 dark:bg-amber-600 border-2 border-white dark:border-slate-800"></div>
-                    <p className="text-xs font-medium text-stone-700 dark:text-stone-300">{ev.title}</p>
+                  <div key={i} className="wiki-view__timeline-item">
+                    <div className="wiki-view__timeline-dot"></div>
+                    <p className="wiki-view__timeline-item-title">{ev.title}</p>
                     {ev.time && (
-                      <p className="text-xs text-stone-400 dark:text-stone-500 mt-0.5 font-mono">{ev.time}</p>
+                      <p className="wiki-view__timeline-item-time">{ev.time}</p>
                     )}
                     {ev.participants && ev.participants.length > 0 && (
-                      <div className="flex gap-1 mt-1 flex-wrap">
+                      <div className="wiki-view__timeline-item-participants">
                         {ev.participants.map((p, j) => (
-                          <span key={j} className="px-1.5 py-0.5 bg-stone-100 dark:bg-slate-700 rounded text-xs text-stone-500 dark:text-stone-400">
+                          <span key={j} className="wiki-view__timeline-item-participant">
                             {p}
                           </span>
                         ))}
@@ -462,58 +434,54 @@ export function WikiView() {
         </div>
 
         {/* Detail panel */}
-        <div className="flex-1 bg-white dark:bg-slate-800 rounded-xl border border-stone-200 dark:border-slate-700 overflow-y-auto">
+        <div className="wiki-view__detail">
           {/* Overview tab */}
           {activeTab === 'overview' && overview && (
-            <div className="p-6">
+            <div className="wiki-view__overview">
               {/* Health score */}
               {healthScore !== null && (
-                <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full mb-6 text-sm font-semibold ${
-                  healthScore >= 0.8 ? 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400' :
-                  healthScore >= 0.5 ? 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400' :
-                  'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400'
-                }`}>
-                  <span>Wiki 健康度: {(healthScore * 100).toFixed(0)}%</span>
-                  {healthIssueCount > 0 && <span className="text-xs opacity-70">({healthIssueCount} 个问题)</span>}
+                <div className={`wiki-view__health-badge ${healthScore >= 0.8 ? 'wiki-view__health-badge--good' : healthScore >= 0.5 ? 'wiki-view__health-badge--warn' : 'wiki-view__health-badge--bad'}`}>
+                  <span>{'Wiki 健康度: '}{(healthScore * 100).toFixed(0)}{'%'}</span>
+                  {healthIssueCount > 0 && <span className="wiki-view__health-badge-count">{'('}{healthIssueCount}{' 个问题)'}</span>}
                 </div>
               )}
 
               {/* Stats cards */}
-              <div className="grid grid-cols-4 gap-4 mb-6">
-                <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{overview.entity_count}</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">实体</p>
+              <div className="wiki-view__stats-grid">
+                <div className="wiki-view__stat-card">
+                  <p className="wiki-view__stat-value wiki-view__stat-value--amber">{overview.entity_count}</p>
+                  <p className="wiki-view__stat-label">{'实体'}</p>
                 </div>
-                <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{overview.relation_count || 0}</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">关系</p>
+                <div className="wiki-view__stat-card">
+                  <p className="wiki-view__stat-value wiki-view__stat-value--blue">{overview.relation_count || 0}</p>
+                  <p className="wiki-view__stat-label">{'关系'}</p>
                 </div>
-                <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-green-600 dark:text-green-400">{overview.timeline_count}</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">时间线事件</p>
+                <div className="wiki-view__stat-card">
+                  <p className="wiki-view__stat-value wiki-view__stat-value--green">{overview.timeline_count}</p>
+                  <p className="wiki-view__stat-label">{'时间线事件'}</p>
                 </div>
-                <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-red-600 dark:text-red-400">{overview.contradiction_count || 0}</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">矛盾点</p>
+                <div className="wiki-view__stat-card">
+                  <p className="wiki-view__stat-value wiki-view__stat-value--red">{overview.contradiction_count || 0}</p>
+                  <p className="wiki-view__stat-label">{'矛盾点'}</p>
                 </div>
               </div>
 
               {/* Type distribution */}
               {overview.type_counts && Object.keys(overview.type_counts).length > 0 && (
-                <div className="mb-6">
-                  <h3 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-3">实体类型分布</h3>
-                  <div className="space-y-2">
+                <div className="wiki-view__section">
+                  <h3 className="wiki-view__section-title">{'实体类型分布'}</h3>
+                  <div className="wiki-view__distribution">
                     {Object.entries(overview.type_counts)
                       .sort(([, a], [, b]) => b - a)
                       .map(([type, count]) => {
                         const pct = overview.entity_count > 0 ? (count / overview.entity_count * 100) : 0
                         return (
-                          <div key={type} className="flex items-center gap-3">
-                            <span className="w-16 text-xs text-stone-500 dark:text-stone-400">{TYPE_LABELS[type] || type}</span>
-                            <div className="flex-1 bg-stone-100 dark:bg-slate-700 rounded-full h-3 overflow-hidden">
-                              <div className="h-full bg-amber-400 dark:bg-amber-600 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                          <div key={type} className="wiki-view__distribution-row">
+                            <span className="wiki-view__distribution-label">{TYPE_LABELS[type] || type}</span>
+                            <div className="wiki-view__distribution-bar-track">
+                              <div className="wiki-view__distribution-bar-fill" style={{ width: `${pct}%` }} />
                             </div>
-                            <span className="text-xs text-stone-400 w-8 text-right">{count}</span>
+                            <span className="wiki-view__distribution-count">{count}</span>
                           </div>
                         )
                       })}
@@ -523,20 +491,20 @@ export function WikiView() {
 
               {/* Confidence distribution */}
               {overview.confidence_distribution && (
-                <div className="mb-6">
-                  <h3 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-3">置信度分布</h3>
-                  <div className="flex gap-4">
-                    <div className="flex-1 bg-green-50 dark:bg-green-900/10 rounded-lg p-3 text-center">
-                      <p className="text-lg font-bold text-green-600 dark:text-green-400">{overview.confidence_distribution.EXTRACTED || 0}</p>
-                      <p className="text-xs text-stone-500 dark:text-stone-400">已确认 (EXTRACTED)</p>
+                <div className="wiki-view__section">
+                  <h3 className="wiki-view__section-title">{'置信度分布'}</h3>
+                  <div className="wiki-view__confidence-grid">
+                    <div className="wiki-view__confidence-card wiki-view__confidence-card--green">
+                      <p className="wiki-view__confidence-value">{overview.confidence_distribution.EXTRACTED || 0}</p>
+                      <p className="wiki-view__confidence-label">{'已确认 (EXTRACTED)'}</p>
                     </div>
-                    <div className="flex-1 bg-amber-50 dark:bg-amber-900/10 rounded-lg p-3 text-center">
-                      <p className="text-lg font-bold text-amber-600 dark:text-amber-400">{overview.confidence_distribution.INFERRED || 0}</p>
-                      <p className="text-xs text-stone-500 dark:text-stone-400">推断 (INFERRED)</p>
+                    <div className="wiki-view__confidence-card wiki-view__confidence-card--amber">
+                      <p className="wiki-view__confidence-value">{overview.confidence_distribution.INFERRED || 0}</p>
+                      <p className="wiki-view__confidence-label">{'推断 (INFERRED)'}</p>
                     </div>
-                    <div className="flex-1 bg-red-50 dark:bg-red-900/10 rounded-lg p-3 text-center">
-                      <p className="text-lg font-bold text-red-600 dark:text-red-400">{overview.confidence_distribution.AMBIGUOUS || 0}</p>
-                      <p className="text-xs text-stone-500 dark:text-stone-400">存疑 (AMBIGUOUS)</p>
+                    <div className="wiki-view__confidence-card wiki-view__confidence-card--red">
+                      <p className="wiki-view__confidence-value">{overview.confidence_distribution.AMBIGUOUS || 0}</p>
+                      <p className="wiki-view__confidence-label">{'存疑 (AMBIGUOUS)'}</p>
                     </div>
                   </div>
                 </div>
@@ -544,15 +512,15 @@ export function WikiView() {
 
               {/* Top entities */}
               {overview.top_entities && overview.top_entities.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-3">重要实体</h3>
-                  <div className="grid grid-cols-2 gap-2">
+                <div className="wiki-view__section">
+                  <h3 className="wiki-view__section-title">{'重要实体'}</h3>
+                  <div className="wiki-view__top-entities-grid">
                     {overview.top_entities.map(e => (
-                      <div key={e.id} className="flex items-center gap-2 px-3 py-2 bg-stone-50 dark:bg-slate-700/50 rounded-lg">
-                        <EntityTypeIcon type={e.type} className="w-4 h-4" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-stone-700 dark:text-stone-300 truncate">{e.name}</p>
-                          <p className="text-xs text-stone-400">{TYPE_LABELS[e.type] || e.type} · 置信度: {e.confidence}</p>
+                      <div key={e.id} className="wiki-view__top-entity-card">
+                        <EntityTypeIcon type={e.type} className="icon-sm" />
+                        <div className="wiki-view__top-entity-info">
+                          <p className="wiki-view__top-entity-name">{e.name}</p>
+                          <p className="wiki-view__top-entity-meta">{TYPE_LABELS[e.type] || e.type}{' · 置信度: '}{e.confidence}</p>
                         </div>
                       </div>
                     ))}
@@ -562,9 +530,9 @@ export function WikiView() {
 
               {/* Empty overview */}
               {overview.entity_count === 0 && (
-                <div className="flex flex-col items-center justify-center py-12">
-                  <GraphIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-                  <p className="text-stone-500 dark:text-stone-400">暂无数据，请先编译知识库</p>
+                <div className="wiki-view__empty-state">
+                  <GraphIcon className="wiki-view__empty-icon" />
+                  <p className="wiki-view__empty-text">{'暂无数据，请先编译知识库'}</p>
                 </div>
               )}
             </div>
@@ -572,14 +540,14 @@ export function WikiView() {
 
           {/* Overview loading */}
           {activeTab === 'overview' && !overview && (
-            <div className="flex items-center justify-center h-full">
-              <div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent"></div>
+            <div className="wiki-view__loading-full">
+              <div className="chat-spinner chat-spinner--accent"></div>
             </div>
           )}
 
           {/* Wiki page content */}
           {selectedPageContent && activeTab === 'wiki-pages' && (
-            <div className="p-6">
+            <div className="wiki-view__page-content">
               <WikiPageRenderer
                 content={selectedPageContent.content}
                 frontmatter={selectedPageContent.frontmatter}
@@ -589,45 +557,45 @@ export function WikiView() {
           )}
 
           {!selectedPageContent && activeTab === 'wiki-pages' && (
-            <div className="flex flex-col items-center justify-center h-full">
-              <DocumentIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-              <p className="text-stone-500 dark:text-stone-400">选择一个页面查看内容</p>
+            <div className="wiki-view__empty-state">
+              <DocumentIcon className="wiki-view__empty-icon" />
+              <p className="wiki-view__empty-text">{'选择一个页面查看内容'}</p>
             </div>
           )}
 
           {entityLoading && (
-            <div className="flex items-center justify-center h-full">
-              <div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent"></div>
+            <div className="wiki-view__loading-full">
+              <div className="chat-spinner chat-spinner--accent"></div>
             </div>
           )}
 
           {!entityLoading && !selectedEntity && activeTab === 'entities' && (
-            <div className="flex flex-col items-center justify-center h-full">
-              <WikiIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-              <p className="text-stone-500 dark:text-stone-400">选择一个实体查看详情</p>
+            <div className="wiki-view__empty-state">
+              <WikiIcon className="wiki-view__empty-icon" />
+              <p className="wiki-view__empty-text">{'选择一个实体查看详情'}</p>
             </div>
           )}
 
           {!entityLoading && selectedEntity && (
-            <div className="p-6">
+            <div className="wiki-view__entity-detail">
               {/* Entity header */}
-              <div className="flex items-center gap-3 mb-6 pb-4 border-b border-stone-200 dark:border-slate-700">
-                <EntityTypeIcon type={selectedEntity.type} className="w-6 h-6" />
+              <div className="wiki-view__entity-detail-header">
+                <EntityTypeIcon type={selectedEntity.type} className="wiki-view__entity-detail-icon" />
                 <div>
-                  <h2 className="text-xl font-bold text-stone-800 dark:text-stone-100">{selectedEntity.name}</h2>
-                  <span className="text-xs text-stone-400 dark:text-stone-500">
-                    {TYPE_LABELS[selectedEntity.type] || selectedEntity.type} · {selectedEntity.id}
+                  <h2 className="wiki-view__entity-detail-name">{selectedEntity.name}</h2>
+                  <span className="wiki-view__entity-detail-meta">
+                    {TYPE_LABELS[selectedEntity.type] || selectedEntity.type}{' · '}{selectedEntity.id}
                   </span>
                 </div>
               </div>
 
               {/* Aliases */}
               {selectedEntity.aliases && selectedEntity.aliases.length > 0 && (
-                <div className="mb-6">
-                  <h3 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-2">别名</h3>
-                  <div className="flex gap-2 flex-wrap">
+                <div className="wiki-view__section">
+                  <h3 className="wiki-view__section-title">{'别名'}</h3>
+                  <div className="wiki-view__aliases">
                     {selectedEntity.aliases.map((a, i) => (
-                      <span key={i} className="px-2 py-1 bg-stone-100 dark:bg-slate-700 rounded text-xs text-stone-600 dark:text-stone-300">
+                      <span key={i} className="wiki-view__alias-tag">
                         {a}
                       </span>
                     ))}
@@ -637,13 +605,13 @@ export function WikiView() {
 
               {/* Attributes */}
               {selectedEntity.attributes && Object.keys(selectedEntity.attributes).length > 0 && (
-                <div className="mb-6">
-                  <h3 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-2">属性</h3>
-                  <div className="grid grid-cols-2 gap-2">
+                <div className="wiki-view__section">
+                  <h3 className="wiki-view__section-title">{'属性'}</h3>
+                  <div className="wiki-view__attrs-grid">
                     {Object.entries(selectedEntity.attributes).map(([k, v]) => (
-                      <div key={k} className="flex justify-between px-3 py-2 bg-stone-50 dark:bg-slate-700/50 rounded-lg">
-                        <span className="text-xs text-stone-500 dark:text-stone-400">{k}</span>
-                        <span className="text-xs text-stone-700 dark:text-stone-300">{String(v)}</span>
+                      <div key={k} className="wiki-view__attr-row">
+                        <span className="wiki-view__attr-key">{k}</span>
+                        <span className="wiki-view__attr-value">{String(v)}</span>
                       </div>
                     ))}
                   </div>
@@ -652,16 +620,16 @@ export function WikiView() {
 
               {/* Relations */}
               {selectedEntity.relations && selectedEntity.relations.length > 0 && (
-                <div className="mb-6">
-                  <h3 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-2">关系</h3>
-                  <div className="space-y-1">
+                <div className="wiki-view__section">
+                  <h3 className="wiki-view__section-title">{'关系'}</h3>
+                  <div className="wiki-view__relations">
                     {selectedEntity.relations.map((rel, i) => (
-                      <div key={i} className="flex items-center gap-2 px-3 py-2 bg-stone-50 dark:bg-slate-700/50 rounded-lg">
-                        <span className="text-xs text-stone-700 dark:text-stone-300">{selectedEntity.name}</span>
-                        <span className="text-xs text-amber-500">→</span>
-                        <span className="text-xs text-stone-500 dark:text-stone-400 italic">{rel.relation}</span>
-                        <span className="text-xs text-amber-500">→</span>
-                        <span className="text-xs text-stone-700 dark:text-stone-300">{rel.target}</span>
+                      <div key={i} className="wiki-view__relation-row">
+                        <span className="wiki-view__relation-name">{selectedEntity.name}</span>
+                        <span className="wiki-view__relation-arrow">{'→'}</span>
+                        <span className="wiki-view__relation-label">{rel.relation}</span>
+                        <span className="wiki-view__relation-arrow">{'→'}</span>
+                        <span className="wiki-view__relation-name">{rel.target}</span>
                       </div>
                     ))}
                   </div>
@@ -670,14 +638,14 @@ export function WikiView() {
 
               {/* Events */}
               {selectedEntity.events && selectedEntity.events.length > 0 && (
-                <div className="mb-6">
-                  <h3 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-2">相关事件</h3>
-                  <div className="space-y-2">
+                <div className="wiki-view__section">
+                  <h3 className="wiki-view__section-title">{'相关事件'}</h3>
+                  <div className="wiki-view__events">
                     {selectedEntity.events.map((ev, i) => (
-                      <div key={i} className="relative pl-4 border-l-2 border-amber-300 dark:border-amber-700">
-                        <p className="text-sm font-medium text-stone-700 dark:text-stone-300">{ev.title}</p>
-                        {ev.time && <p className="text-xs text-stone-400 dark:text-stone-500 font-mono">{ev.time}</p>}
-                        {ev.description && <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">{ev.description}</p>}
+                      <div key={i} className="wiki-view__event-item">
+                        <p className="wiki-view__event-title">{ev.title}</p>
+                        {ev.time && <p className="wiki-view__event-time">{ev.time}</p>}
+                        {ev.description && <p className="wiki-view__event-desc">{ev.description}</p>}
                       </div>
                     ))}
                   </div>
@@ -686,13 +654,13 @@ export function WikiView() {
 
               {/* Mentions */}
               {selectedEntity.mentions && selectedEntity.mentions.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-2">文档引用</h3>
-                  <div className="space-y-2">
+                <div className="wiki-view__section">
+                  <h3 className="wiki-view__section-title">{'文档引用'}</h3>
+                  <div className="wiki-view__mentions">
                     {selectedEntity.mentions.map((m, i) => (
-                      <div key={i} className="px-3 py-2 bg-stone-50 dark:bg-slate-700/50 rounded-lg">
-                        <p className="text-xs font-mono text-amber-600 dark:text-amber-400 mb-1">{m.doc_id}</p>
-                        <p className="text-xs text-stone-600 dark:text-stone-300 line-clamp-2">{m.summary}</p>
+                      <div key={i} className="wiki-view__mention-item">
+                        <p className="wiki-view__mention-doc">{m.doc_id}</p>
+                        <p className="wiki-view__mention-summary">{m.summary}</p>
                       </div>
                     ))}
                   </div>
@@ -702,23 +670,23 @@ export function WikiView() {
           )}
 
           {!entityLoading && activeTab === 'timeline' && timeline.length > 0 && (
-            <div className="p-6">
-              <h2 className="text-lg font-bold text-stone-800 dark:text-stone-100 mb-4">时间线总览</h2>
-              <div className="relative pl-8">
-                <div className="absolute left-3 top-0 bottom-0 w-0.5 bg-amber-300 dark:bg-amber-700"></div>
+            <div className="wiki-view__timeline-detail">
+              <h2 className="wiki-view__timeline-detail-title">{'时间线总览'}</h2>
+              <div className="wiki-view__timeline-detail-body">
+                <div className="wiki-view__timeline-line"></div>
                 {timeline.map((ev, i) => (
-                  <div key={i} className="relative mb-6">
-                    <div className="absolute -left-8 top-1 w-6 h-6 rounded-full bg-amber-400 dark:bg-amber-600 border-4 border-white dark:border-slate-800 flex items-center justify-center">
-                      <span className="text-xs text-white font-bold">{i + 1}</span>
+                  <div key={i} className="wiki-view__timeline-detail-item">
+                    <div className="wiki-view__timeline-detail-dot">
+                      <span className="wiki-view__timeline-detail-num">{i + 1}</span>
                     </div>
-                    <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-3">
-                      <h3 className="text-sm font-semibold text-stone-700 dark:text-stone-300">{ev.title}</h3>
-                      {ev.time && <p className="text-xs font-mono text-amber-600 dark:text-amber-400 mt-1">{ev.time}</p>}
-                      {ev.description && <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">{ev.description}</p>}
+                    <div className="wiki-view__timeline-detail-card">
+                      <h3 className="wiki-view__timeline-detail-item-title">{ev.title}</h3>
+                      {ev.time && <p className="wiki-view__timeline-detail-item-time">{ev.time}</p>}
+                      {ev.description && <p className="wiki-view__timeline-detail-item-desc">{ev.description}</p>}
                       {ev.participants && ev.participants.length > 0 && (
-                        <div className="flex gap-1 mt-2 flex-wrap">
+                        <div className="wiki-view__timeline-detail-item-participants">
                           {ev.participants.map((p, j) => (
-                            <span key={j} className="px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 rounded text-xs text-amber-700 dark:text-amber-400">
+                            <span key={j} className="wiki-view__timeline-detail-item-participant">
                               {p}
                             </span>
                           ))}
@@ -732,9 +700,9 @@ export function WikiView() {
           )}
 
           {!entityLoading && activeTab === 'timeline' && timeline.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full">
-              <ClockIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-              <p className="text-stone-500 dark:text-stone-400">点击左侧"时间线"按钮查看事件</p>
+            <div className="wiki-view__empty-state">
+              <ClockIcon className="wiki-view__empty-icon" />
+              <p className="wiki-view__empty-text">{'点击左侧"时间线"按钮查看事件'}</p>
             </div>
           )}
         </div>

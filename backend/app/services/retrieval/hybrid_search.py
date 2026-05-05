@@ -1,6 +1,7 @@
 """Hybrid retrieval engine: vector search + FTS5 keyword search + RRF fusion."""
 
 import json
+import re
 from app.models.database import get_connection
 from app.services.retrieval.faiss_index import FAISSIndexManager
 from app.services.agent.retrieval_engine.confidence import (
@@ -12,34 +13,173 @@ from app.services.agent.retrieval_engine.rrf import (
     reciprocal_rank_fusion,
 )
 
+# Chinese grammar particles and stopwords to strip from search queries
+_CJK_PARTICLES = set("的了是在和与或就着过们这那个一不也有会被从到把给向让")
+_CJK_STOPWORDS = {
+    "什么", "怎么", "为什么", "如何", "哪里", "哪个", "这个", "那些",
+    "怎样", "多少", "几个", "是否", "能否", "可以", "还是", "一个",
+    "一些", "什么", "起来", "出来", "下去", "过来", "回来",
+    "关于", "对于", "根据", "按照", "通过", "需要", "已经", "可以",
+    "应该", "可能", "没有", "不是", "或者", "而且", "因为", "所以",
+}
+
+# Try to import jieba for proper Chinese segmentation
+_HAS_JIEBA = False
+try:
+    import jieba
+    _HAS_JIEBA = True
+except ImportError:
+    pass
+
+
+def _extract_chinese_words(text: str) -> list[str]:
+    """Extract meaningful search words from Chinese text.
+
+    Strategy:
+    1. If jieba available: use jieba.cut_for_search for proper segmentation
+    2. Else try rewrite_query for entity extraction
+    3. Else: regex n-gram extraction
+    """
+    # Strategy 1: jieba segmentation (best quality)
+    if _HAS_JIEBA:
+        clean = re.sub(r'[][？?！!。，,、；;：:""''（）()【】\n\r\t]', ' ', text)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        if clean:
+            words = [w for w in jieba.cut_for_search(clean)
+                     if len(w) >= 2 and w not in _CJK_STOPWORDS
+                     and not all(c in _CJK_PARTICLES for c in w)]
+            if words:
+                return list(dict.fromkeys(words))[:8]
+
+    # Strategy 2: rewrite_query entity extraction
+    try:
+        from app.services.retrieval.query_rewriter import rewrite_query
+        rewritten = rewrite_query(text)
+        words = list(rewritten.entities) if rewritten.entities else []
+        for sq in rewritten.sub_queries[:3]:
+            for w in sq.split():
+                if len(w) >= 2 and w not in _CJK_STOPWORDS:
+                    words.append(w)
+        if words:
+            return list(dict.fromkeys(words))[:8]
+    except Exception:
+        pass
+
+    # Strategy 3: regex n-gram extraction
+    clean = re.sub(r'[][？?！!。，,、；;：:""''（）()【】\n\r\t]', ' ', text)
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    if not clean:
+        return []
+
+    words = []
+    segments = clean.split()
+    for seg in segments:
+        if not seg:
+            continue
+        is_cjk = all('一' <= c <= '鿿' or c in _CJK_PARTICLES for c in seg)
+        if is_cjk:
+            stripped = "".join(c for c in seg if c not in _CJK_PARTICLES)
+            for n in (4, 3, 2):
+                i = 0
+                while i <= len(stripped) - n:
+                    w = stripped[i:i + n]
+                    if w not in _CJK_STOPWORDS:
+                        words.append(w)
+                    i += n
+        else:
+            if len(seg) >= 2:
+                words.append(seg)
+
+    return list(dict.fromkeys(w for w in words if w not in _CJK_STOPWORDS))[:8]
+
 
 class KeywordSearch:
     """SQLite FTS5 keyword search."""
 
     @staticmethod
-    def search(query: str, doc_id: str | None = None, top_k: int = 10) -> list[dict]:
+    def search(query: str, doc_id: str | None = None, top_k: int = 10, kb_id: str | None = None) -> list[dict]:
         """Search FTS5 index for keyword matches."""
+        # Strip punctuation and special chars that break FTS5 MATCH
+        import re
+        clean = re.sub(r'[][？?！!。，,、；;：:""''（）()【】\n\r\t]', ' ', query)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        if not clean:
+            return []
         conn = get_connection()
         try:
-            if doc_id:
-                cursor = conn.execute(
-                    """SELECT doc_id, chunk_id, content, rank
-                       FROM fts_content
-                       WHERE fts_content MATCH ? AND doc_id = ?
-                       ORDER BY rank
-                       LIMIT ?""",
-                    (query, doc_id, top_k),
-                )
+            if kb_id:
+                # Filter by kb_id via documents table join
+                if doc_id:
+                    cursor = conn.execute(
+                        """SELECT f.doc_id, f.chunk_id, f.content, f.rank
+                           FROM fts_content f
+                           JOIN documents d ON f.doc_id = d.id
+                           WHERE fts_content MATCH ? AND f.doc_id = ? AND d.kb_id = ?
+                           ORDER BY rank
+                           LIMIT ?""",
+                        (clean, doc_id, kb_id, top_k),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """SELECT f.doc_id, f.chunk_id, f.content, f.rank
+                           FROM fts_content f
+                           JOIN documents d ON f.doc_id = d.id
+                           WHERE fts_content MATCH ? AND d.kb_id = ?
+                           ORDER BY rank
+                           LIMIT ?""",
+                        (clean, kb_id, top_k),
+                    )
             else:
-                cursor = conn.execute(
-                    """SELECT doc_id, chunk_id, content, rank
-                       FROM fts_content
-                       WHERE fts_content MATCH ?
-                       ORDER BY rank
-                       LIMIT ?""",
-                    (query, top_k),
-                )
+                if doc_id:
+                    cursor = conn.execute(
+                        """SELECT doc_id, chunk_id, content, rank
+                           FROM fts_content
+                           WHERE fts_content MATCH ? AND doc_id = ?
+                           ORDER BY rank
+                           LIMIT ?""",
+                        (clean, doc_id, top_k),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """SELECT doc_id, chunk_id, content, rank
+                           FROM fts_content
+                           WHERE fts_content MATCH ?
+                           ORDER BY rank
+                           LIMIT ?""",
+                        (clean, top_k),
+                    )
             rows = cursor.fetchall()
+
+            # FTS5 unicode61 tokenizer splits Chinese character-by-character,
+            # so multi-char words like "案件" or "被告" match 0 rows.
+            # Fall back to LIKE when FTS returns nothing and kb_id is set.
+            if not rows and kb_id:
+                words = _extract_chinese_words(clean)
+                if words:
+                    # Use OR: any word match counts as a hit
+                    like_clauses = ["f.content LIKE ?" for _ in words]
+                    like_params = [f"%{w}%" for w in words]
+                    where_extra = " OR ".join(like_clauses)
+                    if doc_id:
+                        cursor = conn.execute(
+                            f"""SELECT f.doc_id, f.chunk_id, f.content, 0 AS rank
+                                FROM fts_content f
+                                JOIN documents d ON f.doc_id = d.id
+                                WHERE ({where_extra}) AND f.doc_id = ? AND d.kb_id = ?
+                                LIMIT ?""",
+                            like_params + [doc_id, kb_id, top_k],
+                        )
+                    else:
+                        cursor = conn.execute(
+                            f"""SELECT f.doc_id, f.chunk_id, f.content, 0 AS rank
+                                FROM fts_content f
+                                JOIN documents d ON f.doc_id = d.id
+                                WHERE ({where_extra}) AND d.kb_id = ?
+                                LIMIT ?""",
+                            like_params + [kb_id, top_k],
+                        )
+                    rows = cursor.fetchall()
+
             return [
                 {
                     "doc_id": row["doc_id"],
@@ -74,7 +214,7 @@ def rrf_merge(results_a: list[dict], results_b: list[dict], k: int = 60) -> list
     return [items[key] | {"rrf_score": score} for key, score in merged]
 
 
-def hybrid_search(
+async def hybrid_search(
     query: str,
     kb_id: str,
     top_k: int = 10,
@@ -101,10 +241,7 @@ def hybrid_search(
     vec_results = []
     if embedding_provider is not None:
         try:
-            import asyncio
-            query_embedding = asyncio.get_event_loop().run_until_complete(
-                embedding_provider.embed([query])
-            )
+            query_embedding = await embedding_provider.embed([query])
             if query_embedding:
                 faiss_mgr = FAISSIndexManager()
                 index = faiss_mgr.load_index(kb_id, "l2")
@@ -117,7 +254,7 @@ def hybrid_search(
             logging.getLogger("app.retrieval.hybrid_search").warning("Vector search failed: %s", e)
 
     # Keyword search
-    kw_results = KeywordSearch.search(query, doc_id=doc_id, top_k=top_k * 2)
+    kw_results = KeywordSearch.search(query, doc_id=doc_id, top_k=top_k * 2, kb_id=kb_id)
 
     # RRF merge (when both results available)
     merged = rrf_merge(vec_results, kw_results, k=rrf_k)
@@ -157,7 +294,7 @@ def hybrid_search_with_graph(
 
     # Perform keyword search if results not provided
     if keyword_results is None and query:
-        keyword_results = KeywordSearch.search(query, top_k=config.top_k * 2)
+        keyword_results = KeywordSearch.search(query, top_k=config.top_k * 2, kb_id=kb_id)
 
     # Merge using RRF
     merged = reciprocal_rank_fusion(

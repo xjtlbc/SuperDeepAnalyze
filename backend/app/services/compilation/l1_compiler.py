@@ -2,11 +2,14 @@
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 from app.config import settings
 from app.models.config import RoleType
 from app.services.parsing.chunking import Chunk
+
+logger = logging.getLogger("app.compilation.l1")
 
 # Keywords that indicate a context length error from the LLM provider
 _CONTEXT_ERROR_KEYWORDS = [
@@ -23,20 +26,215 @@ class L1Compiler:
         self._llm_client = llm_client
         self._kb_id = kb_id
 
-    async def generate_summary(self, chunks: list[Chunk], role: RoleType = RoleType.LIGHTWEIGHT, kb_id: str = "") -> dict:
-        """Generate L1 summary for a batch of chunks."""
+    async def generate_summary(self, chunks: list[Chunk], role: RoleType = RoleType.LIGHTWEIGHT, kb_id: str = "", _retry: int = 0) -> dict:
+        """Generate L1 summary for a batch of chunks with retry."""
         combined = "\n\n".join(c.content for c in chunks)
         chunk_ids = [c.chunk_id for c in chunks]
 
-        result = await self._llm_client.summarize_l1(combined, role=role, kb_id=kb_id or self._kb_id)
+        try:
+            result = await self._llm_client.summarize_l1(combined, role=role, kb_id=kb_id or self._kb_id)
+        except Exception as e:
+            if _retry < 2:
+                await asyncio.sleep(2 ** _retry)
+                return await self.generate_summary(chunks, role=role, kb_id=kb_id, _retry=_retry + 1)
+            raise
+
+        summary_text = result.get("summary", "")
+        # Detect stub/empty results and retry once with a simplified prompt
+        if not summary_text or len(summary_text) < 30:
+            if _retry < 1:
+                logger.info("L1 summary too short (%d chars), retrying with simplified content", len(summary_text))
+                truncated = combined[:3000]  # Send less content on retry
+                try:
+                    result = await self._llm_client.summarize_l1(truncated, role=role, kb_id=kb_id or self._kb_id)
+                    summary_text = result.get("summary", "")
+                except Exception:
+                    pass
 
         return {
             "chunk_ids": chunk_ids,
-            "summary": result.get("summary", ""),
+            "summary": summary_text or result.get("raw", ""),
             "entities_mentioned": result.get("entities_mentioned", []),
             "relations": result.get("relations", []),
             "contradictions": result.get("contradictions", []),
         }
+
+    async def generate_excel_l1(
+        self,
+        analysis: dict,
+        chunks: list[Chunk],
+        filename: str = "",
+        kb_id: str = "",
+    ) -> dict:
+        """Generate L1 summary for Excel documents using the compact analysis JSON.
+
+        Instead of sending the full L2 text (potentially 20000+ lines) to the
+        LLM, this sends the structured analysis JSON (column types, distributions,
+        findings) which is typically ~500 lines.  This dramatically reduces token
+        consumption while producing higher-quality data-oriented summaries.
+
+        Args:
+            analysis: The analysis dict from ExcelProcessResult.analysis
+            chunks: The L2 chunks (used for chunk_ids and evidence refs)
+            filename: Original filename for context
+            kb_id: Knowledge base ID for domain-adaptive prompts
+
+        Returns:
+            Dict with chunk_ids, summary (markdown), and metadata
+        """
+        # Format the analysis into a compact report for the LLM
+        report_lines = self._format_excel_analysis_report(analysis, filename)
+        chunk_ids = [c.chunk_id for c in chunks]
+
+        prompt = f"""你是数据分析专家。请基于以下 Excel 文件的结构化分析报告，生成一份数据概览文档。
+
+## 要求：
+1. 文件概述：简要描述文件用途和规模
+2. 每个 Sheet 的概览：
+   - 表结构（列名、类型、空值情况）
+   - 关键分布特征（高基数列、低区分度列等）
+   - 数据质量发现（常量列、高空值率等）
+3. 跨 Sheet 关联发现（如果有多 Sheet）
+4. 数据质量备注和建议
+
+输出纯 Markdown 格式，直接可读。
+
+## 结构化分析报告：
+
+{report_lines}
+"""
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            response = await self._llm_client.chat(
+                RoleType.LIGHTWEIGHT, messages, temperature=0.3,
+            )
+            message = response.get("choices", [{}])[0].get("message", {})
+            content = message.get("content", "")
+
+            # Extract chunk info from each chunk's metadata
+            sheet_map: dict[str, list[str]] = {}
+            for c in chunks:
+                sheet = getattr(c, "_sheet_name", "")
+                if sheet:
+                    sheet_map.setdefault(sheet, []).append(c.chunk_id)
+
+            return {
+                "chunk_ids": chunk_ids,
+                "summary": content,
+                "entities_mentioned": [],
+                "relations": [],
+                "contradictions": [],
+                "metadata": {
+                    "is_excel": True,
+                    "sheet_map": sheet_map,
+                    "filename": filename,
+                },
+            }
+        except Exception as e:
+            logger.warning("Excel L1 generation failed: %s", e)
+            return {
+                "chunk_ids": chunk_ids,
+                "summary": f"[Excel 分析生成失败: {e}]",
+                "entities_mentioned": [],
+                "relations": [],
+                "contradictions": [],
+                "metadata": {
+                    "is_excel": True,
+                    "sheet_map": {},
+                    "filename": filename,
+                },
+            }
+
+    @staticmethod
+    def _format_excel_analysis_report(analysis: dict, filename: str = "") -> str:
+        """Format the analysis JSON into a compact text report for the LLM.
+
+        This produces ~500 lines instead of the 20000+ lines of raw L2 markdown,
+        dramatically reducing token consumption.
+        """
+        lines = []
+
+        if filename:
+            lines.append(f"# 文件: {filename}")
+
+        sheets = analysis.get("sheets", [])
+        lines.append(f"Sheet 数量: {len(sheets)}")
+        lines.append("")
+
+        for sheet in sheets:
+            name = sheet.get("name", "unknown")
+            dims = sheet.get("dimensions", {})
+            rows = dims.get("rows", 0)
+            cols = dims.get("columns", 0)
+
+            lines.append(f"## Sheet: {name} ({rows}行 x {cols}列)")
+
+            # Banners
+            banners = sheet.get("banners", [])
+            if banners:
+                for b in banners:
+                    lines.append(f"**Banner:** {b.get('text', '')}")
+                lines.append("")
+
+            # Column info table
+            columns = sheet.get("columns", [])
+            if columns:
+                lines.append("### 列结构")
+                lines.append("| 列名 | 类型 | 空值 | 唯一值 | 样本值 |")
+                lines.append("|---|---|---|---|---|")
+                for col in columns:
+                    sample = ", ".join(str(v) for v in col.get("sampleValues", [])[:3])
+                    lines.append(
+                        f"| {col.get('name', '')} | {col.get('dataType', '')} "
+                        f"| {col.get('nullCount', 0)} | {col.get('uniqueCount', 0)} "
+                        f"| {sample} |"
+                    )
+                lines.append("")
+
+            # Distributions
+            distributions = sheet.get("distributions", [])
+            if distributions:
+                lines.append("### 关键分布")
+                for dist in distributions:
+                    col_name = dist.get("column", "")
+                    dtype = dist.get("type", "")
+                    stats = dist.get("stats", {})
+
+                    if dtype in ("integer", "float") and stats:
+                        lines.append(
+                            f"- **{col_name}**: "
+                            f"均值={stats.get('mean', '')}, "
+                            f"中位数={stats.get('median', '')}, "
+                            f"标准差={stats.get('std', '')}, "
+                            f"范围=[{stats.get('min', '')}, {stats.get('max', '')}]"
+                        )
+                    elif dtype == "string" and stats:
+                        top = stats.get("topValues", [])[:5]
+                        top_str = ", ".join(
+                            f"{v.get('value', '')}({v.get('count', '')})"
+                            for v in top
+                        )
+                        lines.append(f"- **{col_name}**: {top_str}")
+                    elif dtype == "date" and stats:
+                        lines.append(
+                            f"- **{col_name}**: "
+                            f"{stats.get('earliest', '')} ~ {stats.get('latest', '')}"
+                        )
+                lines.append("")
+
+            # Findings
+            findings = sheet.get("findings", [])
+            if findings:
+                lines.append("### 数据发现")
+                for f in findings:
+                    lines.append(f"- [{f.get('type', '')}] {f.get('column', '')}: {f.get('detail', '')}")
+                lines.append("")
+
+            lines.append("---")
+            lines.append("")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _is_context_error(exc: Exception) -> bool:
@@ -134,16 +332,53 @@ class L1Compiler:
                         batches_since_save = 0
             except Exception as e:
                 if isinstance(e, asyncio.TimeoutError):
-                    if progress_cb:
-                        result = progress_cb(f"第 {batch_num} 批超时 ({batch_timeout}s)，跳过并继续")
-                        if asyncio.iscoroutine(result):
-                            await result
-                    # Create a minimal stub for the timed-out batch
-                    stub = {"chunk_ids": [c.chunk_id if hasattr(c, 'chunk_id') else f"chunk_{i+j}" for j, c in enumerate(batch)],
-                            "summary": f"[超时未完成] 第{batch_num}批摘要生成超时",
-                            "entities_mentioned": [], "relations": [], "contradictions": []}
-                    results.append(stub)
-                    i += effective_batch_size
+                    # Retry once: shrink batch for large batches, extend timeout for small ones
+                    retry_ok = False
+                    if len(batch) > 5:
+                        retry_batch = batch[:len(batch) // 2]
+                        if progress_cb:
+                            result = progress_cb(f"第 {batch_num} 批超时 ({batch_timeout}s)，缩小批次重试 ({len(retry_batch)} chunks)...")
+                            if asyncio.iscoroutine(result):
+                                await result
+                        try:
+                            summary = await asyncio.wait_for(
+                                self.generate_summary(retry_batch),
+                                timeout=batch_timeout,
+                            )
+                            results.append(summary)
+                            i += effective_batch_size
+                            retry_ok = True
+                        except Exception:
+                            pass
+                    else:
+                        # Small batch (1-5 chunks): retry with doubled timeout
+                        extended_timeout = batch_timeout * 2
+                        if progress_cb:
+                            result = progress_cb(f"第 {batch_num} 批超时 ({batch_timeout}s)，延长超时重试 ({extended_timeout}s)...")
+                            if asyncio.iscoroutine(result):
+                                await result
+                        try:
+                            summary = await asyncio.wait_for(
+                                self.generate_summary(batch),
+                                timeout=extended_timeout,
+                            )
+                            results.append(summary)
+                            i += effective_batch_size
+                            retry_ok = True
+                        except Exception:
+                            pass
+
+                    if not retry_ok:
+                        if progress_cb:
+                            result = progress_cb(f"第 {batch_num} 批超时，跳过并继续")
+                            if asyncio.iscoroutine(result):
+                                await result
+                        stub = {"chunk_ids": [c.chunk_id if hasattr(c, 'chunk_id') else f"chunk_{i+j}" for j, c in enumerate(batch)],
+                                "summary": f"[超时未完成] 第{batch_num}批摘要生成超时",
+                                "entities_mentioned": [], "relations": [], "contradictions": [],
+                                "_timeout_stub": True}
+                        results.append(stub)
+                        i += effective_batch_size
                 elif self._is_context_error(e):
                     old_size = effective_batch_size
                     effective_batch_size = max(5, old_size // 2)
@@ -302,6 +537,23 @@ class L1Compiler:
         return output_path
 
     async def compile(self, chunks: list[Chunk], kb_id: str, doc_id: str) -> Path:
-        """Full L1 compilation: generate summaries and save."""
+        """Full L1 compilation: generate summaries, save, and generate abstract."""
         results = await self.compile_batch(chunks)
-        return self.save(results, kb_id, doc_id)
+        output_path = self.save(results, kb_id, doc_id)
+
+        # Generate L0 abstract from first L1 summaries
+        try:
+            from app.services.compilation.abstract_generator import (
+                generate_doc_abstract, save_abstract,
+            )
+            abstract_data = await generate_doc_abstract(
+                self._llm_client, results, doc_name=doc_id,
+            )
+            abstract_data["doc_id"] = doc_id
+            save_abstract(abstract_data, kb_id, doc_id)
+        except Exception as e:
+            logger.warning(
+                "Abstract generation failed for %s: %s", doc_id, e,
+            )
+
+        return output_path

@@ -80,14 +80,14 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
         clearIdleTimer()
         idleTimer = setTimeout(() => {
           if (!finalReceived) { ws.close(); setWsStatus('disconnected'); startHttpPoll(sessionId) }
-        }, 300_000)  // 300s idle timeout — resets on every event
+        }, 300_000)
       }
-      resetIdleTimer()  // Start the idle timer
+      resetIdleTimer()
 
       ws.onopen = () => { setWsStatus('connected'); ws.send(JSON.stringify({ content })) }
 
       ws.onmessage = (event) => {
-        resetIdleTimer()  // Activity — reset idle timeout
+        resetIdleTimer()
         try {
           const data = JSON.parse(event.data)
           const agentEvent: AgentEvent = {
@@ -113,6 +113,11 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
             token_usage: data.token_usage,
             token_limit: data.token_limit,
             action: data.action,
+            workflow_mode: data.workflow_mode,
+            workflow_steps: data.steps,
+            workflow_synthesis: data.synthesis_preview,
+            workflow_total_entities: data.total_entities,
+            workflow_total_duration: data.total_duration,
           }
           switch (data.type) {
             case 'thinking':
@@ -129,7 +134,7 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
             case 'ask_user':
               setPendingAskUser(agentEvent)
               break
-            case 'tool_call': case 'tool_result': case 'retrieval_hit': case 'decision':
+            case 'tool_call': case 'tool_result': case 'retrieval_hit': case 'decision': case 'workflow_result':
               setAgentEvents(prev => [...prev, agentEvent])
               break
             case 'chunk':
@@ -165,7 +170,7 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
   }
 
   const startHttpPoll = (sessionId: string) => {
-    let attempts = 0; const maxAttempts = 120  // Poll up to ~10 min (120 × 5s)
+    let attempts = 0; const maxAttempts = 120
     const pollInterval = setInterval(async () => {
       attempts++
       try {
@@ -207,73 +212,154 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
   const isThinking = sending && thinkingEvents.length === 0 && agentEvents.length === 0
 
   return (
-    <div className="h-full flex">
+    <div className="chat-container">
       <ConfirmDialog open={confirmDelete !== null} title="删除会话" message="确定删除此会话？所有聊天记录将被永久删除。" onConfirm={executeDeleteSession} onCancel={() => setConfirmDelete(null)} />
-      <div className="w-56 border-r border-stone-200 dark:border-slate-700 flex flex-col bg-white/50 dark:bg-slate-800/50">
-        <div className="p-3 border-b border-stone-200 dark:border-slate-700">
-          <button onClick={createSession} className="w-full px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-medium transition-colors">+ 新对话</button>
+
+      {/* Session sidebar */}
+      <div className="chat-sidebar">
+        <div className="chat-sidebar-header">
+          <button onClick={createSession} className="chat-new-session-btn">+ 新对话</button>
         </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+        <div className="chat-session-list">
           {sessions.map((s) => (
-            <div key={s.id} className={`group flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors ${currentSession === s.id ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 font-medium' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-slate-700'}`}>
-              <button onClick={() => setCurrentSession(s.id)} className="flex-1 text-left truncate"><p className="truncate">{s.title}</p><p className="text-stone-400 dark:text-stone-500 mt-0.5 font-mono">{s.id.slice(0, 12)}</p></button>
-              <button onClick={() => setConfirmDelete(s.id)} className="opacity-0 group-hover:opacity-100 p-1 text-stone-400 hover:text-red-500 transition-opacity" title="删除会话"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
+            <div key={s.id} className={`chat-session-item ${currentSession === s.id ? 'chat-session-item--active' : ''}`}>
+              <button onClick={() => setCurrentSession(s.id)} className="chat-session-btn">
+                <p className="chat-session-title">{s.title}</p>
+                <p className="chat-session-id">{s.id.slice(0, 12)}</p>
+              </button>
+              <button onClick={() => setConfirmDelete(s.id)} className="chat-session-delete-btn" title="删除会话">
+                <svg className="chat-session-delete-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
             </div>
           ))}
         </div>
       </div>
-      <div className="flex-1 flex flex-col min-w-0">
+
+      {/* Main chat area */}
+      <div className="chat-main">
         {currentSession ? (
           <>
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {wsStatus === 'connecting' && (<div className="flex justify-center"><div className="flex items-center gap-2 px-3 py-1.5 bg-stone-100 dark:bg-slate-700 rounded-full text-xs text-stone-500 dark:text-stone-400"><div className="animate-spin rounded-full h-3 w-3 border-2 border-stone-400 border-t-transparent"></div>连接中...</div></div>)}
-              {wsStatus === 'disconnected' && (<div className="flex justify-center"><div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 dark:bg-red-900/20 rounded-full text-xs text-red-500 dark:text-red-400 border border-red-200 dark:border-red-800"><div className="w-2 h-2 rounded-full bg-red-500"></div>连接已断开，请刷新页面重试</div></div>)}
-              {messages.map((msg) => (<div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}><div className="flex flex-col max-w-2xl"><span className={`text-xs text-stone-400 dark:text-stone-500 mb-1 px-1 ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>{msg.role === 'user' ? '我' : '智能助手'}</span><div className={`px-4 py-3 rounded-xl text-sm leading-relaxed ${msg.role === 'user' ? 'bg-amber-600 text-white rounded-br-sm' : 'bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 rounded-bl-sm border border-stone-200 dark:border-slate-600'}`}>{msg.role === 'assistant' ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>, a: ({ href, children }) => <a href={href} className="text-amber-600 dark:text-amber-400 underline hover:text-amber-700" target="_blank" rel="noopener noreferrer">{children}</a>, code: ({ children }) => <code className="bg-stone-200 dark:bg-slate-600 px-1 py-0.5 rounded text-xs font-mono">{children}</code>, pre: ({ children }) => <pre className="bg-stone-100 dark:bg-slate-800 rounded-lg p-3 my-2 overflow-x-auto text-xs font-mono">{children}</pre> }}>{msg.content}</ReactMarkdown> : <p className="whitespace-pre-wrap">{msg.content}</p>}</div></div></div>))}
-
-              {(thinkingEvents.length > 0 || agentEvents.length > 0 || streamingContent) && (
-                <div className="flex justify-start"><div className="max-w-2xl bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-800 p-3 w-full">
-                  <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 font-medium mb-2">
-                    {streamingContent ? (
-                      <CheckCircleIcon className="w-3.5 h-3.5 text-green-500" />
-                    ) : (
-                      <div className="animate-spin rounded-full h-3 w-3 border-2 border-amber-500 border-t-transparent"></div>
-                    )}
-                    {streamingContent ? '正在生成回答...' : 'Agent 正在思考...'}
+            <div className="chat-message-list">
+              {/* Connection status */}
+              {wsStatus === 'connecting' && (
+                <div className="chat-status-bar">
+                  <div className="chat-status-pill chat-status-pill--connecting">
+                    <div className="chat-spinner chat-spinner--sm"></div>
+                    连接中...
                   </div>
-                  <AgentLoopDisplay thinkingEvents={thinkingEvents} actionEvents={agentEvents} onClear={() => { setThinkingEvents([]); setAgentEvents([]) }} />
-                  {streamingContent && (
-                    <div className="mt-3 p-3 bg-white dark:bg-slate-800 rounded-lg border border-stone-200 dark:border-slate-600 text-sm text-stone-800 dark:text-stone-100 leading-relaxed">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>, a: ({ href, children }) => <a href={href} className="text-amber-600 dark:text-amber-400 underline hover:text-amber-700" target="_blank" rel="noopener noreferrer">{children}</a>, code: ({ children }) => <code className="bg-stone-200 dark:bg-slate-600 px-1 py-0.5 rounded text-xs font-mono">{children}</code>, pre: ({ children }) => <pre className="bg-stone-100 dark:bg-slate-800 rounded-lg p-3 my-2 overflow-x-auto text-xs font-mono">{children}</pre> }}>{streamingContent}</ReactMarkdown>
-                      <span className="inline-block w-2 h-4 bg-amber-500 animate-pulse ml-0.5 align-middle" />
-                    </div>
-                  )}
-                  {pendingAskUser && (
-                    <AskUserBlock
-                      event={pendingAskUser}
-                      onReply={replyToAskUser}
-                      disabled={askUserDisabled}
-                    />
-                  )}
-                </div></div>
+                </div>
+              )}
+              {wsStatus === 'disconnected' && (
+                <div className="chat-status-bar">
+                  <div className="chat-status-pill chat-status-pill--disconnected">
+                    <div className="chat-disconnected-dot"></div>
+                    连接已断开，请刷新页面重试
+                  </div>
+                </div>
               )}
 
+              {/* Messages */}
+              {messages.map((msg) => (
+                <div key={msg.id} className={`chat-message-row ${msg.role === 'user' ? 'chat-message-row--user' : 'chat-message-row--assistant'}`}>
+                  <div className="chat-message-col">
+                    <span className={`chat-message-sender ${msg.role === 'user' ? 'chat-message-sender--user' : 'chat-message-sender--assistant'}`}>
+                      {msg.role === 'user' ? '我' : '智能助手'}
+                    </span>
+                    <div className={`chat-message-bubble ${msg.role === 'user' ? 'chat-message-bubble--user' : 'chat-message-bubble--assistant'}`}>
+                      {msg.role === 'assistant' ? (
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                          p: ({ children }) => <p className="chat-md-p">{children}</p>,
+                          a: ({ href, children }) => <a href={href} className="chat-md-link" target="_blank" rel="noopener noreferrer">{children}</a>,
+                          code: ({ children }) => <code className="chat-md-inline-code">{children}</code>,
+                          pre: ({ children }) => <pre className="chat-md-pre">{children}</pre>,
+                        }}>{msg.content}</ReactMarkdown>
+                      ) : (
+                        <p className="chat-message-user-text">{msg.content}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {/* Agent thinking / streaming area */}
+              {(thinkingEvents.length > 0 || agentEvents.length > 0 || streamingContent) && (
+                <div className="chat-message-row chat-message-row--assistant">
+                  <div className="chat-agent-panel">
+                    <div className="chat-agent-header">
+                      {streamingContent ? (
+                        <CheckCircleIcon className="chat-agent-check-icon" />
+                      ) : (
+                        <div className="chat-spinner chat-spinner--accent"></div>
+                      )}
+                      {streamingContent ? '正在生成回答...' : 'Agent 正在思考...'}
+                    </div>
+                    <AgentLoopDisplay thinkingEvents={thinkingEvents} actionEvents={agentEvents} onClear={() => { setThinkingEvents([]); setAgentEvents([]) }} />
+                    {streamingContent && (
+                      <div className="chat-streaming-content">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                          p: ({ children }) => <p className="chat-md-p">{children}</p>,
+                          a: ({ href, children }) => <a href={href} className="chat-md-link" target="_blank" rel="noopener noreferrer">{children}</a>,
+                          code: ({ children }) => <code className="chat-md-inline-code">{children}</code>,
+                          pre: ({ children }) => <pre className="chat-md-pre">{children}</pre>,
+                        }}>{streamingContent}</ReactMarkdown>
+                        <span className="chat-cursor" />
+                      </div>
+                    )}
+                    {pendingAskUser && (
+                      <AskUserBlock
+                        event={pendingAskUser}
+                        onReply={replyToAskUser}
+                        disabled={askUserDisabled}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Initial thinking indicator */}
               {isThinking && !streamingContent && (
-                <div className="flex justify-start"><div className="max-w-2xl bg-stone-50 dark:bg-slate-700/50 rounded-xl border border-stone-200 dark:border-slate-600 p-4 flex items-center gap-3">
-                  <div className="flex gap-1"><div className="w-2 h-2 rounded-full bg-amber-500 animate-bounce" style={{animationDelay: '0ms'}}></div><div className="w-2 h-2 rounded-full bg-amber-500 animate-bounce" style={{animationDelay: '150ms'}}></div><div className="w-2 h-2 rounded-full bg-amber-500 animate-bounce" style={{animationDelay: '300ms'}}></div></div>
-                  <span className="text-sm text-stone-500 dark:text-stone-400">正在连接 Agent...</span>
-                </div></div>
+                <div className="chat-message-row chat-message-row--assistant">
+                  <div className="chat-thinking-indicator">
+                    <div className="chat-bouncing-dots">
+                      <div className="chat-bouncing-dot" style={{ animationDelay: '0ms' }}></div>
+                      <div className="chat-bouncing-dot" style={{ animationDelay: '150ms' }}></div>
+                      <div className="chat-bouncing-dot" style={{ animationDelay: '300ms' }}></div>
+                    </div>
+                    <span className="chat-thinking-text">正在连接 Agent...</span>
+                  </div>
+                </div>
               )}
 
               <div ref={messagesEndRef} />
             </div>
-            <div className="p-4 border-t border-stone-200 dark:border-slate-700">
-              <div className="flex gap-2">
-                <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()} placeholder="输入问题..." disabled={sending} className="flex-1 px-4 py-2.5 rounded-xl border border-stone-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50" />
-                <button onClick={sendMessage} disabled={sending || !input.trim()} className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl text-sm font-medium transition-colors">{sending ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div> : '发送'}</button>
+
+            {/* Input area */}
+            <div className="chat-input-area">
+              <div className="chat-input-row">
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
+                  placeholder="输入问题..."
+                  disabled={sending}
+                  className="chat-input-field"
+                />
+                <button onClick={sendMessage} disabled={sending || !input.trim()} className="chat-send-btn">
+                  {sending ? <div className="chat-spinner chat-spinner--white"></div> : '发送'}
+                </button>
               </div>
             </div>
           </>
-        ) : (<div className="flex flex-col items-center justify-center flex-1"><ChatIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" /><p className="text-stone-500 dark:text-stone-400 mb-4">开始新的对话</p><button onClick={createSession} className="px-6 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-medium transition-colors">创建对话</button></div>)}
+        ) : (
+          <div className="chat-empty-state">
+            <ChatIcon className="chat-empty-icon" />
+            <p className="chat-empty-text">开始新的对话</p>
+            <button onClick={createSession} className="chat-empty-btn">创建对话</button>
+          </div>
+        )}
       </div>
     </div>
   )

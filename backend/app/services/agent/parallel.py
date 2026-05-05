@@ -39,7 +39,7 @@ async def run_parallel_research(
     llm_client,
     tool_registry,
     embedding_provider=None,
-    max_per_query_seconds: int = 60,
+    max_per_query_seconds: int = 180,
     max_concurrent: int = 3,
 ) -> list[ResearchSummary]:
     """Execute multiple sub-query research tasks in parallel.
@@ -60,8 +60,21 @@ async def run_parallel_research(
                 )
                 summary.elapsed_seconds = time.time() - start
             except asyncio.TimeoutError:
-                summary.success = False
-                summary.error = f"研究超时 ({max_per_query_seconds}s)"
+                # Fallback: try a quick keyword search instead of full research
+                try:
+                    fallback = await asyncio.wait_for(
+                        _quick_keyword_search(query, kb_id, tool_registry),
+                        timeout=30,
+                    )
+                    if fallback:
+                        summary.findings = f"[简化搜索] {fallback}"
+                        summary.success = True
+                    else:
+                        summary.success = False
+                        summary.error = f"研究超时 ({max_per_query_seconds}s)"
+                except Exception:
+                    summary.success = False
+                    summary.error = f"研究超时 ({max_per_query_seconds}s)"
                 summary.elapsed_seconds = time.time() - start
             except Exception as e:
                 summary.success = False
@@ -144,3 +157,23 @@ async def _execute_research(
         logger.warning("Research synthesis failed for '%s': %s", query, e)
 
     return summary
+
+
+async def _quick_keyword_search(query: str, kb_id: str, tool_registry) -> str:
+    """Lightweight keyword-only search as a fallback when full research times out."""
+    from app.services.retrieval.hybrid_search import KeywordSearch, _extract_chinese_words
+
+    words = _extract_chinese_words(query)
+    if not words:
+        return ""
+    combined = " ".join(words)
+    results = KeywordSearch.search(combined, top_k=5, kb_id=kb_id)
+    if not results:
+        return ""
+
+    parts = []
+    for r in results[:5]:
+        doc_id = r.get("doc_id", "")
+        content = r.get("content", "")[:300]
+        parts.append(f"[{doc_id}] {content}")
+    return "\n".join(parts)

@@ -21,8 +21,8 @@ from app.services.agent.tools import READ_ONLY_TOOLS
 from app.services.agent.intent_analyzer import analyze_intent_simple, analyze_intent_with_llm
 from app.services.agent.reflection import reflect as _run_reflection
 from app.services.agent.router import should_use_simple_rag, run_simple_rag
-from app.services.agent.memory import KBMemory
-from app.config import settings
+from app.services.agent.memory import KBMemory, extract_session_notes, format_session_notes, AsyncSessionMemoryExtractor
+from app.config import settings, flags
 from app.utils.logging_config import get_logger
 
 
@@ -154,12 +154,13 @@ class AgentLoop:
             _history = []
 
         # ── Build initial messages ───────────────────────────────────
-        messages = [{"role": "system", "content": build_system_prompt(_kb_id)}]
+        _kb_state = ctx.kb_state if ctx else None
+        messages = [{"role": "system", "content": build_system_prompt(_kb_id, kb_state=_kb_state)}]
         for h_msg in _history:
             messages.append(h_msg)
         messages.append({"role": "user", "content": user_query})
 
-        # ── Initialize state ─────────────────────────────────────────
+        # ── Initialize state & context manager ─────────────────────
         state = LoopState(
             phase=LoopPhase.INTERPRETING,
             messages=messages,
@@ -169,6 +170,10 @@ class AgentLoop:
         ctx_mgr = ContextManager(model_context_window=(
             ctx.context_window if ctx else 128_000
         ))
+
+        # Inject KB state-aware context (compiled/partial/uncompiled hints)
+        messages = ctx_mgr.inject_kb_context(messages, _kb_id, _kb_state)
+        state.messages = messages
 
         # Inject context_manager into recall tools (if registered)
         if _registry:
@@ -194,6 +199,14 @@ class AgentLoop:
         final_reason = TerminalReason.COMPLETED
 
         yield {"type": "thinking", "content": f"正在分析问题: {user_query}"}
+
+        # ── Stuck detector and output store ─────────────────────
+        from app.services.agent.output_store import ToolOutputStore
+        stuck_detector = StuckDetector()
+        output_store = ToolOutputStore(_kb_id, _session_id) if _kb_id and _session_id else None
+
+        # ── Session notes (LLM-extracted, injected periodically) ──
+        _session_notes: list[dict] = []
 
         # ── Intent analysis (new) ────────────────────────────────────
         state.phase = LoopPhase.PLANNING
@@ -289,7 +302,7 @@ class AgentLoop:
                     kb_id=_kb_id,
                     llm_client=_llm,
                     tool_registry=_registry,
-                    max_per_query_seconds=60,
+                    max_per_query_seconds=180,
                 )
 
                 # Inject research summaries as context
@@ -359,6 +372,18 @@ class AgentLoop:
                 last_context_action = "microcompact"
                 state.phase = prev_phase
 
+            # Proactive reactive compact: when context exceeds 90%
+            if ctx_mgr.should_reactive_compact(state.messages) and _llm:
+                prev_phase = state.phase
+                state.phase = LoopPhase.COMPACTING
+                thinking_msg = "上下文接近上限(90%)，正在主动压缩..."
+                yield {"type": "thinking", "content": thinking_msg}
+                if self._emitter:
+                    self._emitter.emit_thinking(thinking_msg)
+                state.messages = await ctx_mgr.reactive_compact(state.messages, _llm)
+                last_context_action = "reactive_compact"
+                state.phase = prev_phase
+
             if ctx_mgr.should_auto_compact(state.messages):
                 prev_phase = state.phase
                 state.phase = LoopPhase.COMPACTING
@@ -372,6 +397,13 @@ class AgentLoop:
 
             total_tokens = ctx_mgr.estimate_total_tokens(state.messages)
             limit = ctx_mgr._model_context_window
+
+            # Cache edit: truncate old tool results when approaching threshold
+            cache_edit_threshold = int(limit * settings.agent_cache_edit_threshold)
+            if total_tokens > cache_edit_threshold:
+                state.messages = ctx_mgr.cache_edit(state.messages)
+                total_tokens = ctx_mgr.estimate_total_tokens(state.messages)
+
             yield {
                 "type": "context_update",
                 "token_usage": total_tokens,
@@ -390,56 +422,79 @@ class AgentLoop:
                     "content": "搜索时间已达上限，请立即基于已有信息调用 report_findings 给出最终答案。",
                 })
 
-            # ── Max iterations check (use dynamic budget) ──────────
-            if current_iter > min(_effective_budget, _max_iter):
+            # ── Advisory + Hard turn limits ────────────────────────
+            advisory_limit = min(_effective_budget, _max_iter)
+            hard_limit = min(_effective_budget * 3, _max_iter * 2, 100)
+
+            if current_iter == advisory_limit:
+                # Advisory: suggest wrap-up
+                state.messages.append({
+                    "role": "system",
+                    "content": (
+                        f"[提示] 已达到建议迭代次数({advisory_limit})。"
+                        "请整理已有发现，调用 report_findings 生成最终报告。"
+                        "如仍需深入分析，可以继续，但有硬性上限。"
+                    ),
+                })
+            elif current_iter > hard_limit:
+                # Hard limit: force termination
                 final_reason = TerminalReason.MAX_ITERATIONS
                 break
 
-            # ── Streaming LLM call with retry on context errors ──────
+            # ── Streaming LLM call with model fallback ──────
             response = None
-            retry_count = 0
-            max_retries = 2
-            while retry_count <= max_retries:
+            _llm_role = RoleType.MAIN
+            _used_fallback = False
+
+            # Fallback chain: MAIN → LIGHTWEIGHT → emergency compact + LIGHTWEIGHT
+            for _attempt in range(3):
                 try:
                     all_tools = _registry.get_tool_definitions()
                     async for se in self._streaming_llm_call(
-                        _llm, state.messages, all_tools,
+                        _llm, state.messages, all_tools, role=_llm_role,
                     ):
                         if se["type"] == "_response":
                             response = se["response"]
                         else:
                             yield se  # Forward chunk events
-                    break
+                    break  # Success
                 except Exception as e:
                     error_str = str(e).lower()
-                    if "prompt" in error_str and ("too long" in error_str or "exceed" in error_str):
-                        retry_count += 1
-                        if retry_count <= max_retries:
+                    is_context_error = "prompt" in error_str and ("too long" in error_str or "exceed" in error_str)
+
+                    if _attempt == 0:
+                        # First failure: try lightweight model
+                        self._logger.warning("Main model failed (%s), trying lightweight fallback", e)
+                        _llm_role = RoleType.LIGHTWEIGHT
+                        _used_fallback = True
+                        if is_context_error:
                             state.messages = await ctx_mgr.reactive_compact(state.messages, _llm)
+                    elif _attempt == 1:
+                        # Second failure: SM compact (zero API cost) if notes available, else emergency
+                        self._logger.warning("Lightweight model also failed (%s), compacting context", e)
+                        if _session_notes:
+                            state.messages = ctx_mgr.sm_compact(state.messages, _session_notes)
                         else:
-                            final_reason = TerminalReason.CONTEXT_OVERFLOW
-                            yield {
-                                "type": "final_answer",
-                                "content": "上下文过大，无法压缩到安全范围。请尝试更具体的问题。",
-                                "tool_calls_made": len(state.tool_calls_log),
-                                "iterations": current_iter,
-                                "terminal_reason": final_reason.value,
-                            }
-                            return
+                            state.messages = ctx_mgr.emergency_compact(state.messages)
+                        yield {"type": "thinking", "content": "上下文过大，正在进行紧急压缩..."}
                     else:
-                        if retry_count == 0:
-                            retry_count += 1
-                            await asyncio.sleep(1)
-                        else:
-                            final_reason = TerminalReason.ERROR
-                            yield {
-                                "type": "final_answer",
-                                "content": f"LLM 调用失败: {e}",
-                                "tool_calls_made": len(state.tool_calls_log),
-                                "iterations": current_iter,
-                                "terminal_reason": final_reason.value,
-                            }
-                            return
+                        # Third failure: give up
+                        final_reason = TerminalReason.ERROR
+                        yield {
+                            "type": "final_answer",
+                            "content": f"LLM 调用失败（已尝试模型降级和紧急压缩）: {e}",
+                            "tool_calls_made": len(state.tool_calls_log),
+                            "iterations": current_iter,
+                            "terminal_reason": final_reason.value,
+                        }
+                        return
+
+            # Notify if using fallback model
+            if _used_fallback:
+                state.messages.append({
+                    "role": "system",
+                    "content": "[提示] 当前使用轻量模型，回答可能较简略，请优先基于已有信息生成报告。",
+                })
 
             if response is None:
                 return
@@ -448,12 +503,60 @@ class AgentLoop:
             content = message.get("content", "")
             tool_calls = message.get("tool_calls", []) or []
 
+            # ── max_tokens auto-continuation ─────────────────────
+            finish_reason = response.get("choices", [{}])[0].get("finish_reason", "")
+            if finish_reason == "length" and not tool_calls:
+                state._continuation_count = getattr(state, '_continuation_count', 0) + 1
+                if state._continuation_count <= 3:
+                    yield {"type": "thinking", "content": "回答被截断，正在自动续写..."}
+                    state.messages.append({"role": "assistant", "content": content})
+                    state.messages.append({
+                        "role": "user",
+                        "content": "请从刚才断点继续输出，不要重复已写内容。直接接着写即可。",
+                    })
+                    continue
+                else:
+                    # Exhausted continuations, deliver what we have
+                    pass
+            else:
+                state._continuation_count = 0
+
+            # ── Think-only stuck detection ───────────────────────
+            if not tool_calls and content:
+                stuck_detector.record_text_only()
+                if stuck_detector.check_text_only():
+                    intervention = stuck_detector.get_intervention()
+                    state.messages.append({"role": "assistant", "content": content})
+                    state.messages.append({"role": "user", "content": intervention})
+                    yield {"type": "thinking", "content": "检测到连续分析无行动，注入搜索引导..."}
+                    continue
+
             # ── Tool call handling ─────────────────────────────────
             if tool_calls:
                 state.phase = LoopPhase.SEARCHING
+                # Record tool names for stuck detection
+                for tc in tool_calls:
+                    tn = tc.get("function", {}).get("name", "")
+                    stuck_detector.record_tool_call(tn)
 
                 # Execute tools (parallel for read-only)
-                results = await self._execute_tool_calls(tool_calls, _kb_id, state.call_history)
+                results, stuck_hits = await self._execute_tool_calls(
+                    tool_calls, _kb_id, state.call_history,
+                    output_store=output_store, stuck_detector=stuck_detector,
+                )
+
+                # Accumulate stuck count and force report if persistently stuck
+                state.stuck_count += stuck_hits
+                if state.stuck_count >= 3:
+                    state.messages.append({
+                        "role": "system",
+                        "content": (
+                            "[系统强制终止] Agent已连续多次重复相同搜索策略。"
+                            "请立即使用 report_findings 工具，基于已收集的信息生成最终分析报告。"
+                            "不要再调用任何搜索工具。"
+                        ),
+                    })
+                    state.stuck_count = 0  # reset to avoid repeating
 
                 for tool_name, tool_input, result, elapsed, tc_id in results:
                     call_id = None
@@ -763,10 +866,71 @@ class AgentLoop:
                             })
 
                 state.phase = LoopPhase.SEARCHING  # Continue searching if more tool calls needed
+
+                # ── Session notes extraction (periodic, async background) ────
+                if _llm and current_iter > 0:
+                    # Initialize async extractor if not yet created
+                    if not hasattr(state, '_async_mem_extractor'):
+                        state._async_mem_extractor = AsyncSessionMemoryExtractor()
+
+                    extractor = state._async_mem_extractor
+                    # Check if pending notes from background extraction
+                    pending = extractor.get_pending_notes()
+                    if pending:
+                        _session_notes.clear()
+                        _session_notes.extend(pending)
+                        notes_text = format_session_notes(_session_notes)
+                        found_notes = False
+                        for i, m in enumerate(state.messages):
+                            if (m.get("role") == "system"
+                                    and "本次会话已积累的关键发现" in m.get("content", "")):
+                                state.messages[i] = {"role": "system", "content": notes_text}
+                                found_notes = True
+                                break
+                        if not found_notes:
+                            state.messages.append({"role": "system", "content": notes_text})
+
+                    # Trigger background extraction periodically
+                    if current_iter % settings.agent_session_notes_interval == 0:
+                        total_chars = sum(len(m.get("content", "")) for m in state.messages)
+                        if extractor.should_extract(total_chars):
+                            import asyncio
+                            asyncio.ensure_future(
+                                extractor.extract_background(state.messages, _llm)
+                            )
+
                 continue
 
             # ── No tool calls → REPORTING phase → final answer ─────
             state.phase = LoopPhase.REPORTING
+
+            # Fallback: if no content and no tool calls, try a quick search
+            if not content.strip() and len(state.tool_calls_log) < 2:
+                self._logger.info("Empty answer with few tool calls, executing fallback search")
+                try:
+                    from app.services.retrieval.hybrid_search import KeywordSearch, _extract_chinese_words
+                    words = _extract_chinese_words(user_query)
+                    if words:
+                        fallback_results = KeywordSearch.search(
+                            " ".join(words), top_k=5, kb_id=_kb_id,
+                        )
+                        if fallback_results:
+                            parts = []
+                            for r in fallback_results[:5]:
+                                doc_id = r.get("doc_id", "")
+                                snippet = r.get("content", "")[:300]
+                                parts.append(f"[{doc_id}] {snippet}")
+                            content = (
+                                f"搜索未找到充分信息，以下是关键词匹配结果：\n\n"
+                                + "\n".join(parts)
+                                + "\n\n请尝试用更具体的关键词提问。"
+                            )
+                except Exception as e:
+                    self._logger.warning("Fallback search failed: %s", e)
+
+                if not content.strip():
+                    content = "抱歉，经过多轮搜索未能找到相关信息。请尝试用更具体的关键词提问。"
+
             if self._emitter:
                 self._emitter.emit_final_answer(content)
 
@@ -824,47 +988,99 @@ class AgentLoop:
 
     # ── Streaming LLM call ─────────────────────────────────────────────
 
+    _TRANSIENT_ERROR_SUBSTRINGS = (
+        "rate_limit", "429", "503", "529", "timeout",
+        "econnrefused", "econnreset", "connection error",
+        "server error", "overloaded", "capacity",
+    )
+    _MAX_TRANSIENT_RETRIES = 5
+
     async def _streaming_llm_call(
         self, _llm, messages: list[dict], tools: list[dict],
+        role=RoleType.MAIN,
     ) -> AsyncIterator[dict]:
-        """Stream LLM response, yielding chunk events and finishing with the
-        assembled response dict (type="_response").
+        """Stream LLM response with transient error retry.
+
+        Yields chunk events and finishes with the assembled response
+        dict (type="_response"). Retries on transient errors (429, 500,
+        timeout) with exponential backoff before giving up.
         """
-        content_parts: list[str] = []
-        tc_accum: dict[int, dict] = {}  # index -> {id, name, arguments_str}
+        for attempt in range(self._MAX_TRANSIENT_RETRIES + 1):
+            content_parts: list[str] = []
+            tc_accum: dict[int, dict] = {}
+            streaming_tasks: dict[str, asyncio.Task] = {}
 
-        try:
-            stream = _llm.chat_stream(
-                role=RoleType.MAIN,
-                messages=messages,
-                tools=tools,
-                temperature=0.3,
-            )
-            async for delta in stream:
-                if delta["type"] == "text_delta":
-                    content_parts.append(delta["content"])
-                    yield {"type": "chunk", "content": delta["content"]}
+            # Store the streaming tasks dict on self for _execute_tool_calls
+            self._streaming_tasks = streaming_tasks
 
-                elif delta["type"] == "tool_use_block":
-                    idx = delta["index"]
-                    if idx not in tc_accum:
-                        tc_accum[idx] = {
-                            "id": delta.get("id", ""),
-                            "name": "",
-                            "arguments_str": "",
-                        }
-                    acc = tc_accum[idx]
-                    if delta.get("id"):
-                        acc["id"] = delta["id"]
-                    if delta.get("name"):
-                        acc["name"] += delta["name"]
-                    if delta.get("arguments"):
-                        acc["arguments_str"] += delta["arguments"]
+            try:
+                stream = _llm.chat_stream(
+                    role=role,
+                    messages=messages,
+                    tools=tools,
+                    temperature=0.3,
+                )
+                # Track tool-def-hint for pre-execution
+                tool_idx_to_name: dict[int, str] = {}
 
-        except Exception as e:
-            self._logger.warning("Streaming LLM call failed: %s", e)
-            yield {"type": "_response", "response": None}
-            return
+                async for delta in stream:
+                    if delta["type"] == "text_delta":
+                        content_parts.append(delta["content"])
+                        yield {"type": "chunk", "content": delta["content"]}
+
+                    elif delta["type"] == "tool_use_block":
+                        idx = delta["index"]
+                        if idx not in tc_accum:
+                            tc_accum[idx] = {
+                                "id": delta.get("id", ""),
+                                "name": "",
+                                "arguments_str": "",
+                            }
+                        acc = tc_accum[idx]
+                        if delta.get("id"):
+                            acc["id"] = delta["id"]
+                        if delta.get("name"):
+                            acc["name"] += delta["name"]
+                            # Once name is complete, pre-execute if it's read-only
+                            if acc["name"] in READ_ONLY_TOOLS and flags.agent_streaming_tool_execution:
+                                tool_idx_to_name[idx] = acc["name"]
+                        if delta.get("arguments"):
+                            acc["arguments_str"] += delta["arguments"]
+                            # When arguments are complete, start read-only tools immediately
+                            if (flags.agent_streaming_tool_execution
+                                    and idx in tool_idx_to_name
+                                    and acc["arguments_str"].strip().endswith("}")):
+                                try:
+                                    args = json.loads(acc["arguments_str"])
+                                    args["kb_id"] = self._kb_id if hasattr(self, '_kb_id') else ""
+                                    task = asyncio.create_task(
+                                        self._registry.execute(acc["name"], **args)
+                                    )
+                                    streaming_tasks[acc["id"]] = task
+                                    yield {"type": "tool_start", "tool": acc["name"], "input": args}
+                                except (json.JSONDecodeError, TypeError):
+                                    pass  # Arguments incomplete, wait for more
+
+                # Stream completed successfully
+                break
+
+            except Exception as e:
+                error_str = str(e).lower()
+                is_transient = any(s in error_str for s in self._TRANSIENT_ERROR_SUBSTRINGS)
+
+                if is_transient and attempt < self._MAX_TRANSIENT_RETRIES:
+                    delay = min(5000, 1000 * (2 ** attempt))
+                    self._logger.warning(
+                        "Transient error (attempt %d/%d), retrying in %dms: %s",
+                        attempt + 1, self._MAX_TRANSIENT_RETRIES, delay, e,
+                    )
+                    await asyncio.sleep(delay / 1000)
+                    continue
+
+                # Non-transient or exhausted retries
+                self._logger.warning("Streaming LLM call failed: %s", e)
+                yield {"type": "_response", "response": None}
+                return
 
         content = "".join(content_parts)
         tool_calls = []
@@ -896,17 +1112,29 @@ class AgentLoop:
         tool_calls: list[dict],
         kb_id: str,
         call_history: set[str],
-    ) -> list[tuple[str, dict, str, float, str]]:
+        output_store=None,
+        stuck_detector=None,
+        streaming_tasks: dict[str, asyncio.Task] | None = None,
+    ) -> tuple[list[tuple[str, dict, str, float, str]], int]:
         """Execute tool calls with parallel support for read-only tools.
 
-        Returns list of (tool_name, tool_input, result, elapsed_seconds, tool_call_id).
+        If streaming_tasks is provided, merges pre-started streaming results
+        with newly executed tools. This enables tools to start executing
+        before the model finishes its response (streaming tool execution).
+
+        Returns (results, stuck_count) where results is a list of
+        (tool_name, tool_input, result, elapsed_seconds, tool_call_id)
+        and stuck_count is how many tool calls triggered stuck detection.
         """
         read_tasks = []
         write_tasks = []
 
         for tc in tool_calls:
             tool_name = tc.get("function", {}).get("name", "unknown")
-            tool_input = json.loads(tc.get("function", {}).get("arguments", "{}"))
+            try:
+                tool_input = json.loads(tc.get("function", {}).get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                tool_input = {}
             tool_input["kb_id"] = kb_id
             tc_id = tc.get("id", "")
 
@@ -920,12 +1148,15 @@ class AgentLoop:
 
         semaphore = asyncio.Semaphore(5)
         all_results: list[tuple] = []
+        stuck_count = 0
 
         async def _run_read(tc, tool_name, tool_input, query_sig, tc_id):
             async with semaphore:
-                return await self._run_single_tool(
-                    tool_name, tool_input, query_sig, call_history, tc_id
+                name, inp, res, elapsed, tid, is_stuck = await self._run_single_tool(
+                    tool_name, tool_input, query_sig, call_history, tc_id,
+                    output_store=output_store, stuck_detector=stuck_detector,
                 )
+                return (name, inp, res, elapsed, tid), is_stuck
 
         if read_tasks:
             read_results = await asyncio.gather(
@@ -938,18 +1169,26 @@ class AgentLoop:
                     recovery = _suggest_recovery("unknown", err_msg)
                     all_results.append(("unknown", {}, f"工具执行错误: {err_msg}。建议: {recovery}", 0, ""))
                 else:
-                    all_results.append(r)
+                    result_tuple, is_stuck = r
+                    all_results.append(result_tuple)
+                    if is_stuck:
+                        stuck_count += 1
 
         for tc, tn, ti, qs, tid in write_tasks:
             try:
-                r = await self._run_single_tool(tn, ti, qs, call_history, tid)
-                all_results.append(r)
+                name, inp, res, elapsed, tc_id_out, is_stuck = await self._run_single_tool(
+                    tn, ti, qs, call_history, tid,
+                    output_store=output_store, stuck_detector=stuck_detector,
+                )
+                all_results.append((name, inp, res, elapsed, tc_id_out))
+                if is_stuck:
+                    stuck_count += 1
             except Exception as e:
                 err_msg = str(e)
                 recovery = _suggest_recovery(tn, err_msg)
                 all_results.append((tn, ti, f"工具执行错误: {err_msg}。建议: {recovery}", 0, ""))
 
-        return all_results
+        return all_results, stuck_count
 
     async def _run_single_tool(
         self,
@@ -958,8 +1197,10 @@ class AgentLoop:
         query_sig: str,
         call_history: set[str],
         tool_call_id: str = "",
-    ) -> tuple[str, dict, str, float, str]:
-        """Execute a single tool call. Returns (tool_name, tool_input, result, elapsed, tool_call_id)."""
+        output_store=None,
+        stuck_detector=None,
+    ) -> tuple[str, dict, str, float, str, bool]:
+        """Execute a single tool call. Returns (tool_name, tool_input, result, elapsed, tool_call_id, is_stuck)."""
         if query_sig in call_history:
             return (
                 tool_name,
@@ -967,6 +1208,7 @@ class AgentLoop:
                 "该查询已执行过，请使用已有结果继续分析，或尝试不同的查询角度。",
                 0,
                 tool_call_id,
+                False,
             )
 
         call_history.add(query_sig)
@@ -980,7 +1222,33 @@ class AgentLoop:
             result = f"工具执行错误: {err_msg}。建议: {recovery}"
         elapsed = time.time() - start
 
-        return (tool_name, tool_input, result, elapsed, tool_call_id)
+        # Externalize large outputs (tool result budgeting)
+        # Per-tool budgets: expand/read tools get more, others capped
+        _TOOL_BUDGETS = {
+            "expand_entity": 12000,
+            "read_l2": 10000,
+            "read_l1": 10000,
+            "read_l0": 8000,
+            "batch_expand_l1": 12000,
+            "batch_expand_abstracts": 12000,
+        }
+        budget = _TOOL_BUDGETS.get(tool_name, 6000)
+        if isinstance(result, str) and len(result) > budget:
+            result = result[:budget] + f"\n...[结果已截断至{budget}字符，原始长度{len(result)}]"
+
+        # Persist very large results to disk
+        if output_store and isinstance(result, str) and len(result) > 4000:
+            result = output_store.store(tool_name, result)
+
+        # Stuck detection
+        is_stuck = False
+        if stuck_detector:
+            result_hash = str(hash(result[:200]))
+            if stuck_detector.check(tool_name, result_hash):
+                is_stuck = True
+                result = stuck_detector.get_intervention(tool_name) + "\n\n" + result[:500]
+
+        return (tool_name, tool_input, result, elapsed, tool_call_id, is_stuck)
 
 
 def _suggest_recovery(tool_name: str, error_msg: str) -> str:
@@ -1004,3 +1272,135 @@ def _suggest_recovery(tool_name: str, error_msg: str) -> str:
         return "向量搜索不可用，改用 search_keyword 进行关键词搜索"
 
     return "换用其他搜索工具或调整查询参数"
+
+
+class StuckDetector:
+    """Detect when the Agent is stuck with four detection patterns.
+
+    Inspired by leohc/DeepAnalyze agent-runner.ts StuckDetector.
+    Patterns:
+      - Think-only loop: 8 consecutive think/text responses with no tool calls
+      - Frequency threshold: same tool called >= threshold times in recent window
+      - Consecutive streak: same tool called N times in a row
+      - Empty-result streak: N consecutive empty results → force strategy change
+    """
+
+    THINK_ONLY_WINDOW = 8
+    THINK_ONLY_THRESHOLD = 8
+    FREQUENCY_THRESHOLD = 5
+    FREQUENCY_WINDOW = 8
+    CONSECUTIVE_THRESHOLD = 5
+    EMPTY_RESULT_THRESHOLD = 3
+    MAX_INTERVENTIONS = 2
+    EXEMPT_TOOLS = {"expand", "batch_expand_abstracts"}
+
+    def __init__(self):
+        self._history: list[str] = []  # tool_name entries
+        self._text_only_count: int = 0  # consecutive text-only turns
+        self._intervention_count: int = 0
+        self._empty_result_count: int = 0  # consecutive empty results
+        self._result_hashes: set[str] = set()  # semantic dedup via result hashes
+
+    def record_text_only(self):
+        """Record a turn where the model produced text but no tool calls."""
+        self._text_only_count += 1
+
+    def record_tool_call(self, tool_name: str):
+        """Record a tool call."""
+        self._text_only_count = 0
+        self._history.append(tool_name)
+        if len(self._history) > 20:
+            self._history = self._history[-20:]
+
+    def check(self, tool_name: str, result_hash: str) -> bool:
+        """Return True if a stuck pattern is detected."""
+        if self._intervention_count >= self.MAX_INTERVENTIONS:
+            return False
+        if tool_name in self.EXEMPT_TOOLS:
+            return False
+
+        # Track empty result streak
+        if not result_hash or result_hash == str(hash("")):
+            self._empty_result_count += 1
+        else:
+            self._empty_result_count = 0
+
+        # Check empty-result streak
+        if self._empty_result_count >= self.EMPTY_RESULT_THRESHOLD:
+            self._intervention_count += 1
+            self._empty_result_count = 0
+            return True
+
+        # Check semantic duplicate (same result hash seen before)
+        if result_hash in self._result_hashes and len(self._result_hashes) > 3:
+            # Same exact result from different tool calls → stuck
+            self._intervention_count += 1
+            return True
+        self._result_hashes.add(result_hash)
+
+        return self._detect_pattern(tool_name)
+
+    def check_text_only(self) -> bool:
+        """Return True if the agent is in a think-only loop."""
+        if self._intervention_count >= self.MAX_INTERVENTIONS:
+            return False
+        return self._text_only_count >= self.THINK_ONLY_THRESHOLD
+
+    def _detect_pattern(self, tool_name: str) -> bool:
+        """Check frequency and consecutive patterns."""
+        if not self._history:
+            return False
+
+        # Pattern 1: Consecutive streak
+        recent = self._history[-self.CONSECUTIVE_THRESHOLD:]
+        if len(recent) >= self.CONSECUTIVE_THRESHOLD and all(t == tool_name for t in recent):
+            self._intervention_count += 1
+            return True
+
+        # Pattern 2: Frequency threshold
+        window = self._history[-(self.FREQUENCY_WINDOW + 3):]
+        count = sum(1 for t in window if t == tool_name)
+        if count >= self.FREQUENCY_THRESHOLD:
+            self._intervention_count += 1
+            return True
+
+        return False
+
+    def get_intervention(self, tool_name: str = "") -> str:
+        """Return a tool-specific intervention message."""
+        # Empty-result intervention (highest priority)
+        if self._empty_result_count >= self.EMPTY_RESULT_THRESHOLD:
+            return (
+                "[系统干预] 连续多次搜索返回空结果。"
+                "请立即执行以下操作：\n"
+                "1. 扩大搜索范围（使用更宽泛的关键词）\n"
+                "2. 尝试搜索不同维度的信息\n"
+                "3. 如果确实无法找到更多信息，调用 report_findings 总结已有发现\n"
+                "不要继续使用相同的搜索参数。"
+            )
+
+        # Think-only intervention
+        if self._text_only_count >= self.THINK_ONLY_THRESHOLD:
+            return (
+                "[系统干预] 检测到连续多轮仅分析未执行搜索。"
+                "请立即执行以下操作之一：\n"
+                "1. 调用 search_keyword 搜索相关内容\n"
+                "2. 调用 progressive_search 进行多层级搜索\n"
+                "3. 调用 report_findings 基于已有信息生成报告\n"
+                "不要再继续分析，必须执行具体搜索操作。"
+            )
+
+        # Tool-specific interventions
+        tool_hints = {
+            "search_keyword": "换用不同的关键词，或尝试 progressive_search 多层级搜索",
+            "progressive_search": "尝试 search_keyword 换用不同关键词，或使用 coordinate_research 多角度分析",
+            "read_l2": "检查是否已经获取了足够信息，考虑调用 report_findings 生成报告",
+            "read_l1": "尝试用 search_keyword 搜索更多相关段落",
+            "expand_entity": "已充分了解该实体，尝试搜索其他实体或生成报告",
+        }
+        hint = tool_hints.get(tool_name, "换用完全不同的搜索策略或工具")
+
+        return (
+            f"[系统干预] 检测到对工具 '{tool_name}' 的重复调用。{hint}。\n"
+            "如果已有足够信息，请调用 report_findings 生成最终报告。"
+        )

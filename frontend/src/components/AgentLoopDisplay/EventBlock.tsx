@@ -24,80 +24,26 @@ const EVENT_ICON_MAP: Record<string, React.ComponentType<{className?: string}>> 
   phase: InfoIcon,
   progress: InfoIcon,
   context_update: SettingsIcon,
+  workflow_result: ArrowRightIcon,
 }
 
-// 事件类型配置
-const EVENT_CONFIG: Record<string, { label: string; color: string; bgColor: string }> = {
-  thinking: {
-    label: '思考',
-    color: 'text-purple-600 dark:text-purple-400',
-    bgColor: 'bg-purple-100 dark:bg-purple-900/30'
-  },
-  tool_call: {
-    label: '工具调用',
-    color: 'text-amber-600 dark:text-amber-400',
-    bgColor: 'bg-amber-100 dark:bg-amber-900/30'
-  },
-  tool_result: {
-    label: '工具结果',
-    color: 'text-green-600 dark:text-green-400',
-    bgColor: 'bg-green-100 dark:bg-green-900/30'
-  },
-  retrieval_hit: {
-    label: '检索命中',
-    color: 'text-blue-600 dark:text-blue-400',
-    bgColor: 'bg-blue-100 dark:bg-blue-900/30'
-  },
-  decision: {
-    label: '决策',
-    color: 'text-indigo-600 dark:text-indigo-400',
-    bgColor: 'bg-indigo-100 dark:bg-indigo-900/30'
-  },
-  ask_user: {
-    label: '询问用户',
-    color: 'text-orange-600 dark:text-orange-400',
-    bgColor: 'bg-orange-100 dark:bg-orange-900/30'
-  },
-  final_answer: {
-    label: '最终答案',
-    color: 'text-emerald-600 dark:text-emerald-400',
-    bgColor: 'bg-emerald-100 dark:bg-emerald-900/30'
-  },
-  error: {
-    label: '错误',
-    color: 'text-red-600 dark:text-red-400',
-    bgColor: 'bg-red-100 dark:bg-red-900/30'
-  },
-  intent_analysis: {
-    label: '意图分析',
-    color: 'text-cyan-600 dark:text-cyan-400',
-    bgColor: 'bg-cyan-100 dark:bg-cyan-900/30'
-  },
-  reflection: {
-    label: '自我评估',
-    color: 'text-teal-600 dark:text-teal-400',
-    bgColor: 'bg-teal-100 dark:bg-teal-900/30'
-  },
-  turn_summary: {
-    label: '轮次总结',
-    color: 'text-slate-600 dark:text-slate-400',
-    bgColor: 'bg-slate-100 dark:bg-slate-700/30'
-  },
-  phase: {
-    label: '阶段切换',
-    color: 'text-purple-600 dark:text-purple-400',
-    bgColor: 'bg-purple-100 dark:bg-purple-900/30'
-  },
-  progress: {
-    label: '进度',
-    color: 'text-blue-600 dark:text-blue-400',
-    bgColor: 'bg-blue-100 dark:bg-blue-900/30'
-  },
-  context_update: {
-    label: '上下文管理',
-    color: 'text-gray-600 dark:text-gray-400',
-    bgColor: 'bg-gray-100 dark:bg-gray-700/30'
-  }
+// 事件类型配置 — maps to BEM modifier classes
+const EVENT_CONFIG: Record<string, { label: string; cls: string }> = {
+  thinking:        { label: '思考',     cls: 'event-block--purple' },
+  tool_call:       { label: '工具调用',  cls: 'event-block--amber' },
+  tool_result:     { label: '工具结果',  cls: 'event-block--green' },
+  retrieval_hit:   { label: '检索命中',  cls: 'event-block--blue' },
+  decision:        { label: '决策',     cls: 'event-block--indigo' },
+  ask_user:        { label: '询问用户',  cls: 'event-block--orange' },
+  final_answer:    { label: '最终答案',  cls: 'event-block--emerald' },
+  error:           { label: '错误',     cls: 'event-block--red' },
+  intent_analysis: { label: '意图分析',  cls: 'event-block--cyan' },
+  reflection:      { label: '自我评估',  cls: 'event-block--teal' },
+  turn_summary:    { label: '轮次总结',  cls: 'event-block--slate' },
+  phase:           { label: '阶段切换',  cls: 'event-block--purple' },
+  progress:        { label: '进度',     cls: 'event-block--blue' },
+  context_update:  { label: '上下文管理', cls: 'event-block--gray' },
+  workflow_result: { label: '工作流',   cls: 'event-block--cyan' },
 }
 
 // 工具图标映射
@@ -197,72 +143,69 @@ export function EventBlock({ event, expanded, onToggle, onShowDetail }: EventBlo
   const getToolIcon = () => {
     if (event.type === 'tool_call' && event.tool_name) {
       const IconComp = TOOL_ICON_MAP[event.tool_name] || SettingsIcon
-      return <IconComp className="w-4 h-4" />
+      return <IconComp className="event-block__icon" />
     }
     const IconComp = EVENT_ICON_MAP[event.type] || InfoIcon
-    return <IconComp className="w-4 h-4" />
+    return <IconComp className="event-block__icon" />
   }
 
+  const levelClass = event.level === 'L0'
+    ? 'event-block__level-badge--l0'
+    : event.level === 'L1'
+    ? 'event-block__level-badge--l1'
+    : 'event-block__level-badge--l2'
+
+  const confidenceClass = event.confidence === 'EXTRACTED'
+    ? 'event-block__conf-badge--extracted'
+    : event.confidence === 'INFERRED'
+    ? 'event-block__conf-badge--inferred'
+    : 'event-block__conf-badge--default'
+
   return (
-    <div className={`border-l-2 pl-3 py-1.5 ${config.color.replace('text-', 'border-')}`}>
+    <div className={`event-block ${config?.cls || ''}`}>
       {/* 主行 */}
-      <div className="flex items-center gap-2 text-xs">
+      <div className="event-block__main-row">
         {getToolIcon()}
-        <span className={`font-medium ${config.color}`}>
+        <span className={`event-block__label ${config?.cls || ''}`}>
           {event.type === 'tool_call' && event.tool_name
             ? TOOL_LABELS[event.tool_name] || event.tool_name
-            : config.label}
+            : config?.label || event.type}
         </span>
 
         {/* Level 标签 */}
         {event.level && (
-          <span className={`px-1.5 py-0.5 rounded text-xs font-mono ${
-            event.level === 'L0' ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400' :
-            event.level === 'L1' ? 'bg-green-50 text-green-600 dark:bg-green-900/20 dark:text-green-400' :
-            'bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400'
-          }`}>
+          <span className={`event-block__level-badge ${levelClass}`}>
             {event.level}
           </span>
         )}
 
         {/* Confidence 标签 */}
         {event.confidence && (
-          <span className={`px-1.5 py-0.5 rounded text-xs ${
-            event.confidence === 'EXTRACTED' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400' :
-            event.confidence === 'INFERRED' ? 'bg-yellow-50 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400' :
-            'bg-gray-50 text-gray-600 dark:bg-gray-900/20 dark:text-gray-400'
-          }`}>
+          <span className={`event-block__conf-badge ${confidenceClass}`}>
             {event.confidence}
           </span>
         )}
 
         {/* 时间 */}
-        <span className="text-stone-400 dark:text-stone-500 ml-auto font-mono">
+        <span className="event-block__time">
           {formatTime(event.timestamp)}
         </span>
 
         {/* 持续时间 */}
         {event.duration_ms && (
-          <span className="text-stone-400 dark:text-stone-500">
+          <span className="event-block__duration">
             {formatDuration(event.duration_ms)}
           </span>
         )}
 
         {/* 展开按钮 */}
-        <button
-          onClick={onToggle}
-          className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
-        >
-          <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        <button onClick={onToggle} className="event-block__toggle-btn">
+          <span className={`event-block__chevron ${expanded ? 'event-block__chevron--expanded' : ''}`}>&#9656;</span>
         </button>
 
         {/* 详情按钮 */}
-        <button
-          onClick={onShowDetail}
-          className="text-stone-400 hover:text-amber-500 dark:hover:text-amber-400 transition-colors"
-          title="查看详情"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <button onClick={onShowDetail} className="event-block__detail-btn" title="查看详情">
+          <svg className="event-block__detail-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
         </button>
@@ -270,21 +213,21 @@ export function EventBlock({ event, expanded, onToggle, onShowDetail }: EventBlo
 
       {/* 展开内容 */}
       {expanded && (
-        <div className="mt-2 space-y-2 text-xs">
+        <div className="event-block__expanded">
           {/* 预览 */}
-          <div className={`${config.bgColor} rounded px-2 py-1.5`}>
-            <p className={`${config.color} whitespace-pre-wrap`}>{getPreview()}</p>
+          <div className={`event-block__preview ${config?.cls || ''}`}>
+            <p className={`event-block__preview-text ${config?.cls || ''}`}>{getPreview()}</p>
           </div>
 
           {/* 检索路径 */}
           {event.drill_path && event.drill_path.length > 0 && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">检索路径：</span>
-              <div className="flex items-center gap-1 mt-1 flex-wrap">
+            <div className="event-block__field-cell">
+              <span className="event-block__field-label">检索路径：</span>
+              <div className="event-block__drill-list">
                 {event.drill_path.map((step, i) => (
-                  <span key={i} className="flex items-center gap-1">
-                    <span className="px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 rounded text-amber-600 dark:text-amber-400 font-mono text-xs">{step}</span>
-                    {i < event.drill_path!.length - 1 && <span className="text-stone-400">→</span>}
+                  <span key={i} className="event-block__drill-step">
+                    <span className="event-block__drill-badge">{step}</span>
+                    {i < event.drill_path!.length - 1 && <span className="event-block__drill-arrow">&rarr;</span>}
                   </span>
                 ))}
               </div>
@@ -293,9 +236,9 @@ export function EventBlock({ event, expanded, onToggle, onShowDetail }: EventBlo
 
           {/* 相关度得分 */}
           {event.relevance_score !== undefined && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">相关度得分：</span>
-              <span className="ml-2 font-mono text-amber-600 dark:text-amber-400">
+            <div className="event-block__field-cell">
+              <span className="event-block__field-label">相关度得分：</span>
+              <span className="event-block__relevance-score">
                 {event.relevance_score.toFixed(3)}
               </span>
             </div>
@@ -303,9 +246,9 @@ export function EventBlock({ event, expanded, onToggle, onShowDetail }: EventBlo
 
           {/* 工具参数详情 */}
           {event.type === 'tool_call' && event.tool_args && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">参数：</span>
-              <pre className="mt-1 text-stone-700 dark:text-stone-300 overflow-x-auto whitespace-pre-wrap">
+            <div className="event-block__field-cell">
+              <span className="event-block__field-label">参数：</span>
+              <pre className="event-block__field-pre">
                 {JSON.stringify(event.tool_args, null, 2)}
               </pre>
             </div>
@@ -313,9 +256,9 @@ export function EventBlock({ event, expanded, onToggle, onShowDetail }: EventBlo
 
           {/* 工具结果详情 */}
           {event.type === 'tool_result' && event.tool_result && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">结果：</span>
-              <pre className="mt-1 text-stone-700 dark:text-stone-300 overflow-x-auto whitespace-pre-wrap max-h-40">
+            <div className="event-block__field-cell">
+              <span className="event-block__field-label">结果：</span>
+              <pre className="event-block__field-pre event-block__field-pre--clamped">
                 {typeof event.tool_result === 'string'
                   ? event.tool_result.slice(0, 500)
                   : JSON.stringify(event.tool_result, null, 2).slice(0, 500)}

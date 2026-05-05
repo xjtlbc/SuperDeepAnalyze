@@ -50,3 +50,6 @@ class LoopState:
     last_confidence: float = 0.0
     # Nudge tracking
     _read_nudge_sent: bool = False
+    # Stuck detection
+    stuck_count: int = 0
+    recent_tool_patterns: list[str] = field(default_factory=list)

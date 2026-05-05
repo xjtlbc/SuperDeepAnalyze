@@ -33,19 +33,28 @@ const TYPE_ICONS: Record<string, string> = {
   location: '\u{1F4CD}',
   event: '\u{23F0}',
   unknown: '\u{2753}',
+  document: '\u{1F4C4}',
+}
+
+const TYPE_COLORS: Record<string, string> = {
+  person: '#6366f1',
+  organization: '#f59e0b',
+  location: '#10b981',
+  event: '#ef4444',
+  unknown: '#8b5cf6',
+  document: '#94a3b8',
 }
 
 function EntityNode({ data }: EntityNodeProps) {
   const icon = TYPE_ICONS[data.entityType] || TYPE_ICONS.unknown
   return (
-    <div className="px-3 py-2 rounded-lg border-2 shadow-md bg-white dark:bg-slate-800 cursor-pointer transition-all hover:shadow-lg hover:scale-105"
-      style={{ borderColor: data.color }}>
-      <Handle type="source" position={Position.Right} className="!w-2 !h-2 !bg-slate-400" />
-      <div className="flex items-center gap-1.5">
-        <span className="text-sm">{icon}</span>
-        <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 max-w-[120px] truncate">{data.label}</span>
+    <div className="knowledge-graph__entity-node" style={{ borderColor: data.color }}>
+      <Handle type="source" position={Position.Right} className="knowledge-graph__handle" />
+      <div className="knowledge-graph__entity-inner">
+        <span className="knowledge-graph__entity-icon">{icon}</span>
+        <span className="knowledge-graph__entity-label">{data.label}</span>
       </div>
-      <Handle type="target" position={Position.Left} className="!w-2 !h-2 !bg-slate-400" />
+      <Handle type="target" position={Position.Left} className="knowledge-graph__handle" />
     </div>
   )
 }
@@ -95,8 +104,18 @@ export function KnowledgeGraph({ kbId, onNodeClick, refreshKey }: KnowledgeGraph
     setLoading(true)
     fetch(`${API_BASE}/api/graph/${kbId}`)
       .then(r => r.json())
-      .then(data => { setRawData(data); setLoading(false) })
-      .catch(() => setLoading(false))
+      .then(data => {
+        if (data && data.nodes && data.edges) {
+          setRawData(data)
+        } else if (data && data.detail) {
+          console.warn('Graph API error:', data.detail)
+          setRawData(null)
+        } else {
+          setRawData(null)
+        }
+        setLoading(false)
+      })
+      .catch(() => { setRawData(null); setLoading(false) })
   }, [kbId, refreshKey])
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
@@ -128,7 +147,15 @@ export function KnowledgeGraph({ kbId, onNodeClick, refreshKey }: KnowledgeGraph
         id: n.id,
         type: 'entity',
         position: { x: 0, y: 0 },
-        data: { label: n.label, entityType: n.type, color: n.color },
+        data: {
+          label: n.label,
+          entityType: n.type,
+          color: TYPE_COLORS[n.type] || n.color || TYPE_COLORS.unknown,
+        },
+        style: {
+          width: 28 + Math.min(20, (rawData.edges.filter(e => e.source === n.id || e.target === n.id).length) * 3),
+          height: 28 + Math.min(20, (rawData.edges.filter(e => e.source === n.id || e.target === n.id).length) * 3),
+        },
         opacity: searchLower && !isMatch ? 0.15 : 1,
       }
     })
@@ -159,23 +186,23 @@ export function KnowledgeGraph({ kbId, onNodeClick, refreshKey }: KnowledgeGraph
   useEffect(() => { setNodes(flowNodes) }, [flowNodes, setNodes])
   useEffect(() => { setEdges(flowEdges) }, [flowEdges, setEdges])
 
-  if (loading) return <div className="flex items-center justify-center h-full text-stone-400">Loading graph...</div>
-  if (!rawData || rawData.nodes.length === 0) return <div className="flex items-center justify-center h-full text-stone-400">No graph data. Compile first.</div>
+  if (loading) return <div className="knowledge-graph__placeholder">Loading graph...</div>
+  if (!rawData || rawData.nodes.length === 0) return <div className="knowledge-graph__placeholder">No graph data. Compile first.</div>
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="knowledge-graph">
       {/* Search bar */}
-      <div className="px-3 py-2 border-b border-stone-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+      <div className="knowledge-graph__search-bar">
         <input
           type="text"
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search entities..."
-          className="w-full px-3 py-1.5 text-sm rounded-lg border border-stone-200 dark:border-slate-600 bg-stone-50 dark:bg-slate-700 text-stone-700 dark:text-stone-200 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-400"
+          className="knowledge-graph__search-input"
         />
       </div>
 
-      <div className="flex-1 relative">
+      <div className="knowledge-graph__canvas-wrapper">
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -186,12 +213,12 @@ export function KnowledgeGraph({ kbId, onNodeClick, refreshKey }: KnowledgeGraph
           fitView
           minZoom={0.2}
           maxZoom={3}
-          className="bg-stone-50 dark:bg-slate-900"
+          className="knowledge-graph__flow"
         >
-          <Controls className="!bg-white dark:!bg-slate-800 !border-stone-200 dark:!border-slate-700 [&>button]:!bg-white dark:[&>button]:!bg-slate-800 [&>button]:!border-stone-200 dark:[&>button]:!border-slate-700 [&>button:hover]:!bg-stone-100 dark:[&>button:hover]:!bg-slate-700" />
+          <Controls className="knowledge-graph__controls" />
           <MiniMap
             nodeColor={(n: Node) => (n.data as { color?: string })?.color || '#8b5cf6'}
-            className="!bg-white dark:!bg-slate-800 !border-stone-200 dark:!border-slate-700"
+            className="knowledge-graph__minimap"
             maskColor="rgba(0,0,0,0.1)"
           />
           <Background variant={BackgroundVariant.Dots} gap={16} size={1} color={"#d6d3d1"} />
@@ -199,25 +226,25 @@ export function KnowledgeGraph({ kbId, onNodeClick, refreshKey }: KnowledgeGraph
 
         {/* Detail panel */}
         {selectedNode && (
-          <div className="absolute top-3 right-3 w-64 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-stone-200 dark:border-slate-700 p-3">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-semibold text-stone-700 dark:text-stone-200">{String(selectedNode.data?.label || '')}</span>
-              <button onClick={() => setSelectedNode(null)} className="text-stone-400 hover:text-stone-600 text-xs">✕</button>
+          <div className="knowledge-graph__detail-panel">
+            <div className="knowledge-graph__detail-header">
+              <span className="knowledge-graph__detail-title">{String(selectedNode.data?.label || '')}</span>
+              <button onClick={() => setSelectedNode(null)} className="knowledge-graph__detail-close">{'✕'}</button>
             </div>
-            <div className="text-xs text-stone-500 dark:text-stone-400 space-y-1">
-              <div>Type: <span className="font-medium text-stone-700 dark:text-stone-300">{String(selectedNode.data?.entityType || 'unknown')}</span></div>
-              <div className="flex items-center gap-1.5">
+            <div className="knowledge-graph__detail-body">
+              <div className="knowledge-graph__detail-row">Type: <span className="knowledge-graph__detail-value">{String(selectedNode.data?.entityType || 'unknown')}</span></div>
+              <div className="knowledge-graph__detail-row knowledge-graph__detail-row--color">
                 <span>Color:</span>
-                <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: String(selectedNode.data?.color || '#8b5cf6') }} />
+                <span className="knowledge-graph__color-swatch" style={{ backgroundColor: String(selectedNode.data?.color || '#8b5cf6') }} />
               </div>
               {/* Connected edges */}
-              <div className="mt-2 pt-2 border-t border-stone-100 dark:border-slate-700">
-                <div className="font-medium text-stone-600 dark:text-slate-300 mb-1">Connections:</div>
+              <div className="knowledge-graph__detail-connections">
+                <div className="knowledge-graph__detail-connections-title">Connections:</div>
                 {edges.filter(e => e.source === selectedNode.id || e.target === selectedNode.id).slice(0, 8).map(e => {
                   const otherId = e.source === selectedNode.id ? e.target : e.source
                   const otherNode = nodes.find(n => n.id === otherId)
                   return (
-                    <div key={e.id} className="text-stone-500 dark:text-stone-400">
+                    <div key={e.id} className="knowledge-graph__detail-connection">
                       {String(e.label || 'related')} → {String(otherNode?.data?.label || otherId)}
                     </div>
                   )
@@ -229,7 +256,7 @@ export function KnowledgeGraph({ kbId, onNodeClick, refreshKey }: KnowledgeGraph
       </div>
 
       {/* Stats bar */}
-      <div className="px-3 py-1.5 border-t border-stone-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-stone-400 flex gap-4">
+      <div className="knowledge-graph__stats-bar">
         <span>{rawData.nodes.length} nodes</span>
         <span>{rawData.edges.length} edges</span>
       </div>

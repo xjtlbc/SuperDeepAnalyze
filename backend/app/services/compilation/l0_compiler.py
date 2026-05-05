@@ -87,20 +87,29 @@ class L0Compiler:
                 "mentions": entity.get("mentions", []),
             })
 
-        # Build timeline with entity ID references
+        # Build timeline with entity ID references, deduplicating by (time, description)
         timeline = []
-        for i, event in enumerate(raw.get("timeline", [])):
+        seen_time_desc: set[str] = set()
+        event_idx = 0
+        for event in raw.get("timeline", []):
+            time_val = event.get("time", "")
+            desc_val = event.get("description", "")
+            dedup_key = f"{time_val}||{desc_val}"
+            if dedup_key in seen_time_desc:
+                continue
+            seen_time_desc.add(dedup_key)
             participant_ids = []
             for p in event.get("participants", []):
                 if p in entity_name_to_id:
                     participant_ids.append(entity_name_to_id[p])
             timeline.append({
-                "id": f"event_{kb_id}_{i + 1:03d}",
-                "time": event.get("time", ""),
-                "description": event.get("description", ""),
+                "id": f"event_{kb_id}_{event_idx + 1:03d}",
+                "time": time_val,
+                "description": desc_val,
                 "participants": participant_ids,
                 "source_refs": event.get("source_refs", []),
             })
+            event_idx += 1
 
         # Build event graph
         event_graph = {

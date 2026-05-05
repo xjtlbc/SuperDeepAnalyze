@@ -17,8 +17,9 @@ def _build_l1_prompt(kb_id: str = "") -> str:
 
 ## 要求：
 1. 生成 3-5 行的段落摘要，保留关键事实
-2. 提取文中出现的实体及其关系
-3. 标注疑点或不一致之处
+2. 提取文中出现的实体，每个实体必须包含 name 和 type（可选类型：{cfg.get('entity_types', '人物、组织、地点、事件、概念、物品')}）
+3. 提取实体间的关系（subject → predicate → object）
+4. 标注疑点或不一致之处
 
 ## 文档内容：
 {{content}}
@@ -26,8 +27,8 @@ def _build_l1_prompt(kb_id: str = "") -> str:
 ## 输出格式（JSON）：
 {{{{
   "summary": "段落摘要内容",
-  "entities_mentioned": ["实体A", "实体B"],
-  "relations": [{{{{"from": "实体A", "to": "实体B", "type": "关系类型", "confidence": 0.85}}}}],
+  "entities_mentioned": [{{{{"name": "实体名", "type": "人物"}}}}],
+  "relations": [{{{{"subject": "实体A", "predicate": "关系类型", "object": "实体B"}}}}],
   "contradictions": [{{{{"type": "inconsistency", "description": "矛盾描述"}}}}]
 }}}}
 """

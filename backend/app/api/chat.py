@@ -17,6 +17,8 @@ from app.services.agent.loop import AgentLoop
 from app.services.agent.context import AgentContext
 from app.services.agent.registry import ToolRegistry
 from app.services.agent.tools import register_all_tools
+from app.services.agent.kb_state import KBCompilationState
+from app.services.agent.output_store import ToolOutputStore
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -45,16 +47,17 @@ class SessionResponse(BaseModel):
     created_at: str
 
 
-def _build_agent(kb_id: str, llm_client: LLMClient, router_obj: ModelRouter) -> tuple[AgentLoop, ToolRegistry]:
-    """Build an AgentLoop with all tools registered for a given KB.
+def _build_agent(kb_id: str, llm_client: LLMClient, router_obj: ModelRouter) -> tuple[AgentLoop, ToolRegistry, KBCompilationState]:
+    """Build an AgentLoop with tools registered for the KB's compilation state.
 
-    Returns (agent, registry) so callers can construct AgentContext.
+    Returns (agent, registry, kb_state) so callers can construct AgentContext.
     """
     registry = ToolRegistry()
     embedding_provider = router_obj.get_provider(RoleType.EMBEDDING)
-    register_all_tools(registry, kb_id, embedding_provider)
+    kb_state = KBCompilationState.check(kb_id)
+    register_all_tools(registry, kb_id, embedding_provider, kb_state=kb_state, llm_client=llm_client)
     agent = AgentLoop(llm_client, registry, max_iterations=settings.agent_max_iterations)
-    return agent, registry
+    return agent, registry, kb_state
 
 
 async def _run_agent_query(content: str, kb_id: str) -> str:
@@ -66,12 +69,21 @@ async def _run_agent_query(content: str, kb_id: str) -> str:
     router_obj = ModelRouter()
     router_obj.register(db_configs)
     llm_client = LLMClient(router_obj)
-    agent, _registry = _build_agent(kb_id, llm_client, router_obj)
+    agent, _registry, _kb_state = _build_agent(kb_id, llm_client, router_obj)
 
     final_answer = "No response generated."
     async for event in agent.run(user_query=content, kb_id=kb_id):
         if event["type"] == "final_answer":
-            final_answer = event["content"]
+            answer = event.get("content", "")
+            if answer and answer.strip():
+                final_answer = answer
+
+    # Cleanup stale externalized tool outputs
+    try:
+        store = ToolOutputStore(kb_id, "")
+        store.cleanup_stale()
+    except Exception:
+        pass
 
     return final_answer
 
@@ -339,7 +351,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             router_obj = ModelRouter()
             router_obj.register(db_configs)
             llm_client = LLMClient(router_obj)
-            agent, registry = _build_agent(kb_id, llm_client, router_obj)
+            agent, registry, kb_state = _build_agent(kb_id, llm_client, router_obj)
 
             # Query total document count for DecisionPointManager
             total_docs = 1
@@ -371,6 +383,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 max_iterations=settings.agent_max_iterations,
                 ask_user_callback=ask_user_cb,
                 history_messages=history_messages,
+                kb_state=kb_state,
                 metadata={"total_docs": total_docs},
             )
 
@@ -400,6 +413,13 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                         turn_summary_data = event
             except Exception as agent_exc:
                 agent_error = str(agent_exc)
+
+            # Cleanup stale externalized tool outputs after each turn
+            try:
+                store = ToolOutputStore(kb_id, session_id)
+                store.cleanup_stale()
+            except Exception:
+                pass
 
             # Guarantee: always emit terminal event if none was sent
             if not full_response and not agent_error:

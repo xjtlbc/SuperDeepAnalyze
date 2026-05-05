@@ -10,31 +10,31 @@ export interface KBInfo {
 }
 
 export const statusMap: Record<string, { label: string; color: string }> = {
-  pending: { label: '待编译', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' },
-  processing: { label: '编译中', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
-  completed: { label: '已完成', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
-  failed: { label: '失败', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
-  partial: { label: '部分完成', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
-  paused: { label: '已暂停', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
+  pending: { label: '待编译', color: 'badge badge--pending' },
+  processing: { label: '编译中', color: 'badge badge--processing' },
+  completed: { label: '已完成', color: 'badge badge--completed' },
+  failed: { label: '失败', color: 'badge badge--failed' },
+  partial: { label: '部分完成', color: 'badge badge--partial' },
+  paused: { label: '已暂停', color: 'badge badge--partial' },
 }
 
 export const TYPE_LABELS: Record<string, string> = { person: '人物', location: '地点', organization: '组织', event: '事件', object: '物品', concept: '概念' }
 
 export const compileStatusLabels: Record<string, { label: string; color: string }> = {
-  pending: { label: '待编译', color: 'bg-stone-100 text-stone-500 dark:bg-stone-700 dark:text-stone-400' },
-  processing: { label: '编译中', color: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' },
-  completed: { label: '已编译', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
-  failed: { label: '编译失败', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
-  partial: { label: '部分编译', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
-  paused: { label: '已暂停', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
+  pending: { label: '待编译', color: 'badge badge--muted' },
+  processing: { label: '编译中', color: 'badge badge--pending' },
+  completed: { label: '已编译', color: 'badge badge--processing' },
+  failed: { label: '编译失败', color: 'badge badge--failed' },
+  partial: { label: '部分编译', color: 'badge badge--partial' },
+  paused: { label: '已暂停', color: 'badge badge--partial' },
 }
 
 export const parseStatusLabels: Record<string, { label: string; color: string }> = {
-  pending: { label: '待解析', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' },
-  parsing: { label: '解析中', color: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300' },
-  processing: { label: '解析中', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
-  completed: { label: '已解析', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
-  failed: { label: '解析失败', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
+  pending: { label: '待解析', color: 'badge badge--pending' },
+  parsing: { label: '解析中', color: 'badge badge--muted' },
+  processing: { label: '解析中', color: 'badge badge--processing' },
+  completed: { label: '已解析', color: 'badge badge--completed' },
+  failed: { label: '解析失败', color: 'badge badge--failed' },
 }
 
 export function formatSize(bytes: number) {

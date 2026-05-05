@@ -55,53 +55,51 @@ export function ToolCallCard({ event }: ToolCallCardProps) {
         : JSON.stringify(event.tool_result)).slice(0, 100)
     : ''
 
-  const borderColor = isCall ? 'border-amber-400' : 'border-green-400'
+  const borderVariant = isCall ? 'tool-card--call' : 'tool-card--result'
+
+  const levelClass = event.level === 'L0'
+    ? 'tool-card__level--l0'
+    : event.level === 'L1'
+    ? 'tool-card__level--l1'
+    : 'tool-card__level--l2'
 
   return (
-    <div className={`border-l-2 ${borderColor} pl-3 py-1.5`}>
+    <div className={`tool-card ${borderVariant}`}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className={`flex items-center gap-2 text-xs ${
-          isCall
-            ? 'text-amber-600 dark:text-amber-400'
-            : 'text-green-600 dark:text-green-400'
-        } hover:text-amber-700 dark:hover:text-amber-300 transition-colors w-full text-left`}
+        className={`tool-card__header-btn ${isCall ? 'tool-card__header-btn--call' : 'tool-card__header-btn--result'}`}
       >
-        <IconComp className="w-4 h-4" />
-        <span className="font-medium">{label}</span>
+        <IconComp className="tool-card__icon" />
+        <span className="tool-card__label">{label}</span>
 
         {/* Level 标签 */}
         {event.level && (
-          <span className={`px-1.5 py-0.5 rounded text-xs font-mono ${
-            event.level === 'L0' ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400' :
-            event.level === 'L1' ? 'bg-green-50 text-green-600 dark:bg-green-900/20 dark:text-green-400' :
-            'bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400'
-          }`}>
+          <span className={`tool-card__level-badge ${levelClass}`}>
             {event.level}
           </span>
         )}
 
         {event.duration_ms && (
-          <span className="text-stone-400 dark:text-stone-500 ml-auto">
+          <span className="tool-card__duration">
             {formatDuration(event.duration_ms)}
           </span>
         )}
 
-        <span className={`text-stone-400 ml-auto transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        <span className={`tool-card__chevron ${expanded ? 'tool-card__chevron--expanded' : ''}`}>&#9656;</span>
       </button>
 
       {expanded && (
-        <div className="mt-2 space-y-1 text-xs">
+        <div className="tool-card__expanded">
           {inputPreview && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">输入：</span>
-              <code className="text-stone-700 dark:text-stone-300">{inputPreview}</code>
+            <div className="tool-card__field-cell">
+              <span className="tool-card__field-label">输入：</span>
+              <code className="tool-card__field-code">{inputPreview}</code>
             </div>
           )}
           {outputPreview && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">输出：</span>
-              <p className="text-stone-700 dark:text-stone-300 mt-1 whitespace-pre-wrap">
+            <div className="tool-card__field-cell">
+              <span className="tool-card__field-label">输出：</span>
+              <p className="tool-card__field-output">
                 {outputPreview}
                 {(typeof event.tool_result === 'string' ? event.tool_result.length : JSON.stringify(event.tool_result || '').length) > 100 ? '...' : ''}
               </p>
@@ -110,15 +108,13 @@ export function ToolCallCard({ event }: ToolCallCardProps) {
 
           {/* Drill Path */}
           {event.drill_path && event.drill_path.length > 0 && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">检索路径：</span>
-              <div className="flex items-center gap-1 mt-1 flex-wrap">
+            <div className="tool-card__field-cell">
+              <span className="tool-card__field-label">检索路径：</span>
+              <div className="tool-card__drill-list">
                 {event.drill_path.map((step, i) => (
-                  <span key={i} className="flex items-center gap-1">
-                    <span className="px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 rounded text-amber-600 dark:text-amber-400 font-mono">
-                      {step}
-                    </span>
-                    {i < event.drill_path!.length - 1 && <span className="text-stone-400">→</span>}
+                  <span key={i} className="tool-card__drill-step">
+                    <span className="tool-card__drill-badge">{step}</span>
+                    {i < event.drill_path!.length - 1 && <span className="tool-card__drill-arrow">&rarr;</span>}
                   </span>
                 ))}
               </div>
@@ -127,9 +123,9 @@ export function ToolCallCard({ event }: ToolCallCardProps) {
 
           {/* Relevance Score */}
           {event.relevance_score !== undefined && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">相关度：</span>
-              <span className="ml-2 font-mono text-amber-600 dark:text-amber-400">
+            <div className="tool-card__field-cell">
+              <span className="tool-card__field-label">相关度：</span>
+              <span className="tool-card__relevance-score">
                 {event.relevance_score.toFixed(3)}
               </span>
             </div>

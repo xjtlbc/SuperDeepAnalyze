@@ -20,7 +20,8 @@ const EVENT_LABELS: Record<AgentEvent['type'], string> = {
   turn_summary: '轮次总结',
   phase: '阶段切换',
   progress: '进度更新',
-  context_update: '上下文更新'
+  context_update: '上下文更新',
+  workflow_result: '工作流结果'
 }
 
 export function DetailModal({ event, onClose }: DetailModalProps) {
@@ -50,79 +51,81 @@ export function DetailModal({ event, onClose }: DetailModalProps) {
     return JSON.stringify(event, null, 2)
   }
 
+  const levelClass = event.level === 'L0'
+    ? 'detail-modal__level--l0'
+    : event.level === 'L1'
+    ? 'detail-modal__level--l1'
+    : 'detail-modal__level--l2'
+
+  const confidenceClass = event.confidence === 'EXTRACTED'
+    ? 'detail-modal__confidence--extracted'
+    : event.confidence === 'INFERRED'
+    ? 'detail-modal__confidence--inferred'
+    : 'detail-modal__confidence--default'
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="detail-modal__overlay">
       {/* 背景遮罩 */}
-      <div
-        className="absolute inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      <div className="detail-modal__backdrop" onClick={onClose} />
 
       {/* 模态框 */}
-      <div className="relative bg-white dark:bg-slate-800 rounded-xl border border-stone-200 dark:border-slate-700 shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+      <div className="detail-modal__dialog">
         {/* 头部 */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200 dark:border-slate-700">
-          <div className="flex items-center gap-2">
-            <h3 className="font-semibold text-stone-800 dark:text-stone-100">
-              事件详情
-            </h3>
-            <span className="px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 rounded text-xs text-amber-600 dark:text-amber-400 font-medium">
-              {EVENT_LABELS[event.type]}
-            </span>
+        <div className="detail-modal__header">
+          <div className="detail-modal__header-left">
+            <h3 className="detail-modal__title">事件详情</h3>
+            <span className="detail-modal__type-badge">{EVENT_LABELS[event.type]}</span>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 rounded-lg hover:bg-stone-100 dark:hover:bg-slate-700 transition-colors"
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <button onClick={onClose} className="detail-modal__close-btn">
+            <svg className="detail-modal__close-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
         {/* 内容 */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="detail-modal__body">
           {/* 基本信息 */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-3">
-              <p className="text-xs text-stone-500 dark:text-stone-400">ID</p>
-              <p className="text-sm font-mono text-stone-700 dark:text-stone-300">{event.id}</p>
+          <div className="detail-modal__grid-2col">
+            <div className="detail-modal__info-cell">
+              <p className="detail-modal__info-label">ID</p>
+              <p className="detail-modal__info-value detail-modal__info-value--mono">{event.id}</p>
             </div>
-            <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-3">
-              <p className="text-xs text-stone-500 dark:text-stone-400">时间戳</p>
-              <p className="text-sm font-mono text-stone-700 dark:text-stone-300">{formatTime(event.timestamp)}</p>
+            <div className="detail-modal__info-cell">
+              <p className="detail-modal__info-label">时间戳</p>
+              <p className="detail-modal__info-value detail-modal__info-value--mono">{formatTime(event.timestamp)}</p>
             </div>
-            <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-3">
-              <p className="text-xs text-stone-500 dark:text-stone-400">类型</p>
-              <p className="text-sm text-stone-700 dark:text-stone-300">{event.type}</p>
+            <div className="detail-modal__info-cell">
+              <p className="detail-modal__info-label">类型</p>
+              <p className="detail-modal__info-value">{event.type}</p>
             </div>
-            <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-3">
-              <p className="text-xs text-stone-500 dark:text-stone-400">持续时间</p>
-              <p className="text-sm font-mono text-stone-700 dark:text-stone-300">{formatDuration(event.duration_ms)}</p>
+            <div className="detail-modal__info-cell">
+              <p className="detail-modal__info-label">持续时间</p>
+              <p className="detail-modal__info-value detail-modal__info-value--mono">{formatDuration(event.duration_ms)}</p>
             </div>
           </div>
 
           {/* Content */}
           {event.content && (
-            <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-3">
-              <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">内容</p>
-              <p className="text-sm text-stone-700 dark:text-stone-300 whitespace-pre-wrap">{event.content}</p>
+            <div className="detail-modal__info-cell">
+              <p className="detail-modal__info-label">内容</p>
+              <p className="detail-modal__info-value detail-modal__info-value--prewrap">{event.content}</p>
             </div>
           )}
 
           {/* 工具名称 */}
           {event.tool_name && (
-            <div className="bg-amber-50 dark:bg-amber-900/20 rounded-lg p-3 border border-amber-200 dark:border-amber-800">
-              <p className="text-xs text-amber-600 dark:text-amber-400 mb-1">工具名称</p>
-              <p className="text-sm font-medium text-amber-700 dark:text-amber-300">{event.tool_name}</p>
+            <div className="detail-modal__tool-name-cell">
+              <p className="detail-modal__tool-name-label">工具名称</p>
+              <p className="detail-modal__tool-name-value">{event.tool_name}</p>
             </div>
           )}
 
           {/* 工具参数 */}
           {event.tool_args && (
-            <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-3">
-              <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">工具参数</p>
-              <pre className="text-sm text-stone-700 dark:text-stone-300 overflow-x-auto whitespace-pre-wrap bg-white dark:bg-slate-800 rounded p-2 border border-stone-200 dark:border-slate-600">
+            <div className="detail-modal__info-cell">
+              <p className="detail-modal__info-label">工具参数</p>
+              <pre className="detail-modal__pre-block">
                 {JSON.stringify(event.tool_args, null, 2)}
               </pre>
             </div>
@@ -130,9 +133,9 @@ export function DetailModal({ event, onClose }: DetailModalProps) {
 
           {/* 工具结果 */}
           {event.tool_result !== undefined && (
-            <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-3 border border-green-200 dark:border-green-800">
-              <p className="text-xs text-green-600 dark:text-green-400 mb-1">工具结果</p>
-              <pre className="text-sm text-green-700 dark:text-green-300 overflow-x-auto whitespace-pre-wrap max-h-60">
+            <div className="detail-modal__result-cell">
+              <p className="detail-modal__result-label">工具结果</p>
+              <pre className="detail-modal__result-pre">
                 {typeof event.tool_result === 'string'
                   ? event.tool_result
                   : JSON.stringify(event.tool_result, null, 2)}
@@ -142,13 +145,9 @@ export function DetailModal({ event, onClose }: DetailModalProps) {
 
           {/* Level */}
           {event.level && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-stone-500 dark:text-stone-400">层级：</span>
-              <span className={`px-2 py-1 rounded text-sm font-mono ${
-                event.level === 'L0' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' :
-                event.level === 'L1' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
-                'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-              }`}>
+            <div className="detail-modal__inline-field">
+              <span className="detail-modal__info-label">层级：</span>
+              <span className={`detail-modal__level-badge ${levelClass}`}>
                 {event.level}
               </span>
             </div>
@@ -156,13 +155,9 @@ export function DetailModal({ event, onClose }: DetailModalProps) {
 
           {/* Confidence */}
           {event.confidence && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-stone-500 dark:text-stone-400">置信度：</span>
-              <span className={`px-2 py-1 rounded text-sm ${
-                event.confidence === 'EXTRACTED' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' :
-                event.confidence === 'INFERRED' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
-                'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400'
-              }`}>
+            <div className="detail-modal__inline-field">
+              <span className="detail-modal__info-label">置信度：</span>
+              <span className={`detail-modal__confidence-badge ${confidenceClass}`}>
                 {event.confidence}
               </span>
             </div>
@@ -170,9 +165,9 @@ export function DetailModal({ event, onClose }: DetailModalProps) {
 
           {/* Relevance Score */}
           {event.relevance_score !== undefined && (
-            <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 border border-blue-200 dark:border-blue-800">
-              <p className="text-xs text-blue-600 dark:text-blue-400 mb-1">相关度得分</p>
-              <p className="text-lg font-mono font-bold text-blue-700 dark:text-blue-300">
+            <div className="detail-modal__relevance-cell">
+              <p className="detail-modal__relevance-label">相关度得分</p>
+              <p className="detail-modal__relevance-value">
                 {event.relevance_score.toFixed(4)}
               </p>
             </div>
@@ -180,16 +175,14 @@ export function DetailModal({ event, onClose }: DetailModalProps) {
 
           {/* Drill Path */}
           {event.drill_path && event.drill_path.length > 0 && (
-            <div className="bg-stone-50 dark:bg-slate-700/50 rounded-lg p-3">
-              <p className="text-xs text-stone-500 dark:text-stone-400 mb-2">检索路径</p>
-              <div className="flex items-center gap-2 flex-wrap">
+            <div className="detail-modal__info-cell">
+              <p className="detail-modal__info-label detail-modal__info-label--mb2">检索路径</p>
+              <div className="detail-modal__drill-path-list">
                 {event.drill_path.map((step, i) => (
-                  <span key={i} className="flex items-center gap-1">
-                    <span className="px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded text-sm text-amber-700 dark:text-amber-400 font-mono">
-                      {step}
-                    </span>
+                  <span key={i} className="detail-modal__drill-step">
+                    <span className="detail-modal__drill-step-badge">{step}</span>
                     {i < event.drill_path!.length - 1 && (
-                      <span className="text-stone-400 dark:text-stone-500">→</span>
+                      <span className="detail-modal__drill-arrow">&rarr;</span>
                     )}
                   </span>
                 ))}
@@ -198,20 +191,17 @@ export function DetailModal({ event, onClose }: DetailModalProps) {
           )}
 
           {/* 完整 JSON */}
-          <div className="bg-stone-100 dark:bg-slate-700 rounded-lg p-3">
-            <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">完整 JSON</p>
-            <pre className="text-xs text-stone-700 dark:text-stone-300 overflow-x-auto whitespace-pre-wrap max-h-40">
+          <div className="detail-modal__json-cell">
+            <p className="detail-modal__info-label">完整 JSON</p>
+            <pre className="detail-modal__json-pre">
               {getFullJson()}
             </pre>
           </div>
         </div>
 
         {/* 底部 */}
-        <div className="px-4 py-3 border-t border-stone-200 dark:border-slate-700 flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 bg-stone-200 hover:bg-stone-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-stone-700 dark:text-stone-300 rounded-lg text-sm font-medium transition-colors"
-          >
+        <div className="detail-modal__footer">
+          <button onClick={onClose} className="detail-modal__close-btn-main">
             关闭
           </button>
         </div>

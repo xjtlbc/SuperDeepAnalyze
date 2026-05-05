@@ -6,6 +6,7 @@ from pathlib import Path
 class DocType(str, Enum):
     PDF = "pdf"
     DOCX = "docx"
+    DOC = "doc"
     XLSX = "xlsx"
     CSV = "csv"
     IMAGE = "image"

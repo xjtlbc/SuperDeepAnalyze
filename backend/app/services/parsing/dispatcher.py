@@ -18,11 +18,13 @@ from app.services.parsing.docx_parser import DocxParser
 from app.services.parsing.excel_parser import ExcelParser
 from app.services.parsing.image_parser import ImageParser
 from app.services.parsing.text_parser import TextParser
+from app.services.parsing.doc_converter import extract_text_from_doc
 
 logger = logging.getLogger("app.parsing")
 
 # Supported extensions
 PDF_EXTS = {".pdf"}
+DOC_EXTS = {".doc"}
 DOCX_EXTS = {".docx"}
 XLSX_EXTS = {".xlsx", ".xls", ".csv"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -47,7 +49,7 @@ class ParserDispatcher:
     def supports(self, file_path: str | Path) -> bool:
         """Check if we can parse this file type."""
         ext = Path(file_path).suffix.lower()
-        return ext in (PDF_EXTS | DOCX_EXTS | XLSX_EXTS | IMAGE_EXTS | TEXT_EXTS)
+        return ext in (PDF_EXTS | DOC_EXTS | DOCX_EXTS | XLSX_EXTS | IMAGE_EXTS | TEXT_EXTS)
 
     async def parse(self, file_path: str | Path, doc_id: str, kb_id: str) -> ParsedDocument:
         """Parse a file using the appropriate parser. All sync parsers wrapped in to_thread."""
@@ -56,6 +58,8 @@ class ParserDispatcher:
 
         if ext in PDF_EXTS:
             return await self._parse_pdf(path, doc_id, kb_id)
+        elif ext in DOC_EXTS:
+            return await self._parse_doc(path, doc_id, kb_id)
         elif ext in DOCX_EXTS:
             return await asyncio.to_thread(self._docx.parse, path, doc_id, kb_id)
         elif ext in XLSX_EXTS:
@@ -146,16 +150,17 @@ class ParserDispatcher:
         import fitz
 
         doc = fitz.open(str(path))
-        pages_text = []
+        try:
+            pages_text = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text("text")
+                if text and text.strip() and len(text.strip()) > 20:
+                    pages_text.append(f"## Page {page_num + 1}\n\n{text.strip()}")
 
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            text = page.get_text("text")
-            if text and text.strip() and len(text.strip()) > 20:
-                pages_text.append(f"## Page {page_num + 1}\n\n{text.strip()}")
-
-        page_count = len(doc)
-        doc.close()
+            page_count = len(doc)
+        finally:
+            doc.close()
 
         content = "\n\n---\n\n".join(pages_text) if pages_text else ""
 
@@ -199,3 +204,29 @@ class ParserDispatcher:
             raise ValueError("VLM not configured, cannot parse images")
         parser = ImageParser(self._vlm_config)
         return await parser.parse(path, doc_id, kb_id)
+
+    async def _parse_doc(self, path: Path, doc_id: str, kb_id: str) -> ParsedDocument:
+        """Parse legacy .doc with 6-tier fallback chain (see doc_converter.py)."""
+        file_hash = compute_file_hash(path)
+
+        # Use the centralized extract_text_from_doc which handles all tiers
+        text = await extract_text_from_doc(path)
+
+        if not text or not text.strip():
+            raise RuntimeError(
+                f"All .doc parsing methods failed for {path.name}. "
+                "Install LibreOffice (libreoffice-writer), catdoc, or antiword for .doc support."
+            )
+
+        return ParsedDocument(
+            doc_id=doc_id,
+            kb_id=kb_id,
+            filename=path.name,
+            file_type=DocType.DOCX,
+            file_hash=file_hash,
+            content=text,
+            metadata={
+                "parser": "doc_multi_tier",
+                "text_length": len(text),
+            },
+        )

@@ -7,41 +7,47 @@ interface ReflectionEvent {
   iteration: number
 }
 
-const STRENGTH_LABELS: Record<string, { label: string; color: string }> = {
-  strong: { label: '强', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
-  partial: { label: '部分', color: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' },
-  weak: { label: '弱', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
-  none: { label: '无', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
+const STRENGTH_CONFIG: Record<string, { label: string; cls: string }> = {
+  strong: { label: '强', cls: 'reflection-block__strength--strong' },
+  partial: { label: '部分', cls: 'reflection-block__strength--partial' },
+  weak:   { label: '弱', cls: 'reflection-block__strength--weak' },
+  none:   { label: '无', cls: 'reflection-block__strength--none' },
 }
 
 export function ReflectionBlock({ event }: { event: ReflectionEvent }) {
-  const strength = STRENGTH_LABELS[event.evidence_strength] || STRENGTH_LABELS.none
+  const strength = STRENGTH_CONFIG[event.evidence_strength] || STRENGTH_CONFIG.none
   const pct = Math.round(event.confidence * 100)
+  const pctClass = pct >= 80
+    ? 'reflection-block__pct--high'
+    : pct >= 50
+    ? 'reflection-block__pct--mid'
+    : 'reflection-block__pct--low'
+
+  const barClass = pct >= 80
+    ? 'reflection-block__bar-fill--high'
+    : pct >= 50
+    ? 'reflection-block__bar-fill--mid'
+    : 'reflection-block__bar-fill--low'
 
   return (
-    <div className="px-3 py-2 my-1 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="font-medium text-slate-600 dark:text-slate-300">自我评估 (第{event.iteration}轮)</span>
-        <div className="flex items-center gap-2">
-          <span className={`px-1.5 py-0.5 rounded ${strength.color}`}>证据: {strength.label}</span>
-          <span className={`font-mono font-bold ${pct >= 80 ? 'text-green-600 dark:text-green-400' : pct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}`}>
-            {pct}%
-          </span>
+    <div className="reflection-block">
+      <div className="reflection-block__header">
+        <span className="reflection-block__title">自我评估 (第{event.iteration}轮)</span>
+        <div className="reflection-block__badges">
+          <span className={`reflection-block__strength-badge ${strength.cls}`}>证据: {strength.label}</span>
+          <span className={`reflection-block__pct ${pctClass}`}>{pct}%</span>
         </div>
       </div>
-      <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-1.5 mb-1.5">
-        <div
-          className={`h-full rounded-full transition-all ${pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
-          style={{ width: `${pct}%` }}
-        />
+      <div className="reflection-block__bar">
+        <div className={`reflection-block__bar-fill ${barClass}`} style={{ width: `${pct}%` }} />
       </div>
       {event.answered_aspects.length > 0 && (
-        <div className="text-slate-500 dark:text-slate-400 mb-1">
+        <div className="reflection-block__answered">
           已解答: {event.answered_aspects.join(', ')}
         </div>
       )}
       {event.missing_aspects.length > 0 && (
-        <div className="text-amber-600 dark:text-amber-400">
+        <div className="reflection-block__missing">
           缺失: {event.missing_aspects.join(', ')}
         </div>
       )}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { API_BASE, compileStatusLabels, parseStatusLabels, formatSize, typeLabels } from './shared'
 import { ConfirmDialog } from '../../ConfirmDialog'
@@ -13,6 +13,7 @@ interface DocInfo {
   compile_status: string
   parse_error?: string | null
   created_at: string
+  content_snippet?: string
 }
 
 interface UploadItem {
@@ -21,6 +22,9 @@ interface UploadItem {
   message?: string
 }
 
+type SortField = 'filename' | 'file_size' | 'created_at'
+type SortDir = 'asc' | 'desc'
+
 export function DocumentsTab({ kbId, onRefresh }: { kbId: string; onRefresh: () => void }) {
   const [docs, setDocs] = useState<DocInfo[]>([])
   const [kbCompileStatus, setKbCompileStatus] = useState<string>('pending')
@@ -28,13 +32,16 @@ export function DocumentsTab({ kbId, onRefresh }: { kbId: string; onRefresh: () 
   const [uploading, setUploading] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortField, setSortField] = useState<SortField>('created_at')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const uploadIndexRef = useRef(0)
   const pollingRefs = useRef<Map<string, number>>(new Map())
 
   const fetchDocs = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/documents/list/${kbId}`)
+      const res = await fetch(`${API_BASE}/api/documents/list/${kbId}?snippet=true`)
       if (res.ok) {
         const data = await res.json()
         setDocs(Array.isArray(data) ? data : [])
@@ -59,7 +66,6 @@ export function DocumentsTab({ kbId, onRefresh }: { kbId: string; onRefresh: () 
 
   useEffect(() => { fetchDocs(); fetchKbStatus() }, [fetchDocs, fetchKbStatus])
 
-  // Cleanup polling on unmount
   useEffect(() => {
     return () => {
       pollingRefs.current.forEach(timer => clearTimeout(timer))
@@ -67,8 +73,40 @@ export function DocumentsTab({ kbId, onRefresh }: { kbId: string; onRefresh: () 
     }
   }, [])
 
+  const filteredAndSorted = useMemo(() => {
+    let result = docs
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase()
+      result = result.filter(d => d.filename.toLowerCase().includes(q))
+    }
+
+    result = [...result].sort((a, b) => {
+      let cmp = 0
+      if (sortField === 'filename') {
+        cmp = a.filename.localeCompare(b.filename, 'zh-CN')
+      } else if (sortField === 'file_size') {
+        cmp = a.file_size - b.file_size
+      } else {
+        cmp = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      }
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+
+    return result
+  }, [docs, searchQuery, sortField, sortDir])
+
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDir('asc')
+    }
+  }
+
   const pollDocumentStatus = useCallback((docId: string) => {
-    const maxPolls = 100 // 100 * 3s = 5 minutes
+    const maxPolls = 100
     let pollCount = 0
 
     const poll = () => {
@@ -138,7 +176,6 @@ export function DocumentsTab({ kbId, onRefresh }: { kbId: string; onRefresh: () 
           updated2[idx] = { ...updated2[idx], status: 'success', message: data.filename }
           setUploadQueue(updated2)
           uploadIndexRef.current = idx + 1
-          // Add doc to list immediately and start polling
           setDocs(prev => [{
             id: data.id,
             filename: data.filename,
@@ -191,6 +228,11 @@ export function DocumentsTab({ kbId, onRefresh }: { kbId: string; onRefresh: () 
     }
   }
 
+  const SortIcon = ({ field }: { field: SortField }) => {
+    if (sortField !== field) return <span className="docs-tab__sort-icon docs-tab__sort-icon--inactive">↕</span>
+    return <span className="docs-tab__sort-icon docs-tab__sort-icon--active">{sortDir === 'asc' ? '↑' : '↓'}</span>
+  }
+
   return (
     <div className="h-full overflow-y-auto">
       <ConfirmDialog
@@ -203,32 +245,30 @@ export function DocumentsTab({ kbId, onRefresh }: { kbId: string; onRefresh: () 
 
       {/* Upload area */}
       <div
-        className={`mb-6 p-8 bg-white dark:bg-slate-800 rounded-xl border-2 text-center transition-all duration-200 ${
-          dragging ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/10 scale-[1.02]' : 'border-dashed border-stone-300 dark:border-slate-600'
-        }`}
+        className={`docs-tab__upload-area ${dragging ? 'docs-tab__upload-area--dragging' : 'docs-tab__upload-area--idle'}`}
         onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
         onDragLeave={(e) => { e.preventDefault(); setDragging(false) }}
         onDrop={handleDrop}
       >
         <input ref={fileInputRef} type="file" accept=".pdf,.docx,.doc,.txt,.md,.xlsx,.xls,.csv" multiple onChange={(e) => { if (e.target.files && e.target.files.length > 0) startBatchUpload(e.target.files); if (e.target) e.target.value = '' }} disabled={uploading} className="hidden" id="file-upload-detail" />
-        <label htmlFor="file-upload-detail" className={`inline-flex flex-col items-center cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
-          <svg className="w-12 h-12 text-stone-400 dark:text-stone-500 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <label htmlFor="file-upload-detail" className={`docs-tab__upload-label ${uploading ? 'docs-tab__upload-label--disabled' : ''}`}>
+          <svg className="docs-tab__upload-icon mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M4 14v6a2 2 0 002 2h12a2 2 0 002-2v-6" />
           </svg>
-          <span className="text-stone-600 dark:text-stone-300 font-medium">{dragging ? '松开文件上传' : '点击选择文件（支持批量）'}</span>
-          <span className="text-xs text-stone-400 dark:text-stone-500 mt-1">支持 PDF, Word, TXT, Markdown, Excel，可一次选择多个文件</span>
+          <span className="docs-tab__upload-text">{dragging ? '松开文件上传' : '点击选择文件（支持批量）'}</span>
+          <span className="docs-tab__upload-hint">支持 PDF, Word, TXT, Markdown, Excel，可一次选择多个文件</span>
         </label>
 
         {uploadQueue.length > 0 && (
-          <div className="mt-4 max-h-48 overflow-y-auto space-y-1.5 text-left">
+          <div className="docs-tab__queue-list">
             {uploadQueue.map((item, i) => (
-              <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded bg-stone-50 dark:bg-slate-700/50 text-xs">
-                {item.status === 'pending' && <div className="w-3 h-3 rounded-full border border-stone-300 dark:border-slate-500 flex-shrink-0" />}
-                {item.status === 'uploading' && <div className="w-3 h-3 rounded-full border-2 border-amber-500 border-t-transparent animate-spin flex-shrink-0" />}
-                {item.status === 'success' && <CheckCircleIcon className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
-                {item.status === 'error' && <XIcon className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
-                <span className="text-stone-700 dark:text-stone-300 truncate flex-1">{item.file.name}</span>
-                {item.message && <span className={`flex-shrink-0 ${item.status === 'error' ? 'text-red-500' : 'text-stone-400 dark:text-stone-500'}`}>{item.message}</span>}
+              <div key={i} className="docs-tab__queue-item">
+                {item.status === 'pending' && <div className="docs-tab__queue-indicator docs-tab__queue-indicator--pending" />}
+                {item.status === 'uploading' && <div className="docs-tab__queue-indicator docs-tab__queue-indicator--uploading" />}
+                {item.status === 'success' && <CheckCircleIcon className="docs-tab__queue-check-icon" />}
+                {item.status === 'error' && <XIcon className="docs-tab__queue-error-icon" />}
+                <span className="docs-tab__queue-filename truncate flex-1">{item.file.name}</span>
+                {item.message && <span className={`shrink-0 ${item.status === 'error' ? 'docs-tab__queue-msg--error' : 'docs-tab__queue-msg--muted'}`}>{item.message}</span>}
               </div>
             ))}
           </div>
@@ -236,53 +276,101 @@ export function DocumentsTab({ kbId, onRefresh }: { kbId: string; onRefresh: () 
       </div>
 
       {/* KB compile status */}
-      <div className="mb-4 flex items-center gap-3 p-3 bg-white dark:bg-slate-800 rounded-lg border border-stone-200 dark:border-slate-700">
-        <span className="text-sm text-stone-500 dark:text-stone-400">知识库编译状态：</span>
-        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${compileStatusLabels[kbCompileStatus]?.color || 'bg-gray-100'}`}>
+      <div className="docs-tab__kb-status">
+        <span className="docs-tab__kb-status-label">知识库编译状态：</span>
+        <span className={`badge ${compileStatusLabels[kbCompileStatus]?.color || 'badge-muted'}`}>
           {compileStatusLabels[kbCompileStatus]?.label || kbCompileStatus}
         </span>
       </div>
 
+      {/* Search and sort controls */}
+      <div className="docs-tab__controls mb-3">
+        <div className="docs-tab__search-wrapper">
+          <svg className="docs-tab__search-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="搜索文件名..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="docs-tab__search-input"
+          />
+        </div>
+        <div className="docs-tab__sort-buttons">
+          <button
+            onClick={() => toggleSort('filename')}
+            className={`docs-tab__sort-btn ${sortField === 'filename' ? 'docs-tab__sort-btn--active' : ''}`}
+          >
+            文件名 <SortIcon field="filename" />
+          </button>
+          <button
+            onClick={() => toggleSort('file_size')}
+            className={`docs-tab__sort-btn ${sortField === 'file_size' ? 'docs-tab__sort-btn--active' : ''}`}
+          >
+            大小 <SortIcon field="file_size" />
+          </button>
+          <button
+            onClick={() => toggleSort('created_at')}
+            className={`docs-tab__sort-btn ${sortField === 'created_at' ? 'docs-tab__sort-btn--active' : ''}`}
+          >
+            日期 <SortIcon field="created_at" />
+          </button>
+        </div>
+      </div>
+
       {/* Document list */}
-      <div className="space-y-2">
-        {docs.length === 0 && <p className="text-sm text-stone-400 dark:text-stone-500 text-center py-8">暂无文档，请上传</p>}
-        {docs.map((doc) => (
-          <div key={doc.id} className="flex items-center justify-between p-3 bg-white dark:bg-slate-800 rounded-lg border border-stone-200 dark:border-slate-700">
-            <div className="flex items-center gap-3">
-              <FileTextIcon className="w-5 h-5" />
-              <div>
-                <p className="text-sm font-medium text-stone-800 dark:text-stone-100">{doc.filename}</p>
-                <p className="text-xs text-stone-400 dark:text-stone-500">{formatSize(doc.file_size)} · {typeLabels[doc.file_type] || doc.file_type} · {new Date(doc.created_at).toLocaleDateString('zh-CN')}</p>
+      <div className="docs-tab__doc-list">
+        {filteredAndSorted.length === 0 && (
+          <p className="docs-tab__empty-state">
+            {docs.length === 0 ? '暂无文档，请上传' : '无匹配结果'}
+          </p>
+        )}
+        {filteredAndSorted.map((doc) => (
+          <div key={doc.id} className="docs-tab__doc-card">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3 min-w-0">
+                <FileTextIcon className="docs-tab__doc-icon shrink-0" />
+                <div className="min-w-0">
+                  <p className="docs-tab__doc-filename">{doc.filename}</p>
+                  <p className="docs-tab__doc-meta">{formatSize(doc.file_size)} · {typeLabels[doc.file_type] || doc.file_type} · {new Date(doc.created_at).toLocaleDateString('zh-CN')}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {doc.parse_status === 'parsing' ? (
+                  <span className="docs-tab__parsing-badge">
+                    <div className="docs-tab__parsing-spinner" />
+                    解析中
+                  </span>
+                ) : (
+                  <span className={`badge ${parseStatusLabels[doc.parse_status]?.color || 'badge-muted'}`}>
+                    {parseStatusLabels[doc.parse_status]?.label || doc.parse_status}
+                  </span>
+                )}
+                {doc.parse_status === 'failed' && doc.parse_error && (
+                  <span className="docs-tab__error-hint" title={doc.parse_error}>!</span>
+                )}
+                <span className={`badge ${compileStatusLabels[doc.compile_status]?.color || 'badge-muted'}`}>
+                  {compileStatusLabels[doc.compile_status]?.label || doc.compile_status}
+                </span>
+                <Link to={`/knowledge/${kbId}/documents/${doc.id}`} className="docs-tab__action-btn docs-tab__action-btn--detail" title="文档详情">
+                  <svg className="docs-tab__action-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                  </svg>
+                </Link>
+                <button onClick={() => handleDeleteDoc(doc.id)} className="docs-tab__action-btn docs-tab__action-btn--delete" title="删除">
+                  <svg className="docs-tab__action-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {doc.parse_status === 'parsing' ? (
-                <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 inline-flex items-center gap-1">
-                  <div className="w-2.5 h-2.5 rounded-full border-2 border-gray-400 border-t-transparent animate-spin" />
-                  解析中
-                </span>
-              ) : (
-                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${parseStatusLabels[doc.parse_status]?.color || 'bg-gray-100'}`}>
-                  {parseStatusLabels[doc.parse_status]?.label || doc.parse_status}
-                </span>
-              )}
-              {doc.parse_status === 'failed' && doc.parse_error && (
-                <span className="text-xs text-red-400 cursor-help" title={doc.parse_error}>!</span>
-              )}
-              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${compileStatusLabels[doc.compile_status]?.color || 'bg-gray-100'}`}>
-                {compileStatusLabels[doc.compile_status]?.label || doc.compile_status}
-              </span>
-              <Link to={`/knowledge/${kbId}/documents/${doc.id}`} className="p-1.5 text-stone-400 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors" title="文档详情">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                </svg>
-              </Link>
-              <button onClick={() => handleDeleteDoc(doc.id)} className="p-1.5 text-stone-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors" title="删除">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
-            </div>
+            {/* Content snippet */}
+            {doc.content_snippet && (
+              <div className="docs-tab__doc-snippet">
+                {doc.content_snippet}
+              </div>
+            )}
           </div>
         ))}
       </div>

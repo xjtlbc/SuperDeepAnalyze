@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { PersonIcon, FolderIcon, ClockIcon, DatabaseIcon, InfoIcon, FileTextIcon, DocumentIcon, GraphIcon } from '../Icons'
+import { ExcelViewer } from '../ExcelViewer'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
@@ -19,7 +20,7 @@ interface L1SummaryEntry {
   chunk_ids?: string[]
   summary?: string
   content?: string
-  entities_mentioned?: string[]
+  entities_mentioned?: Array<string | { name: string; type?: string }>
   [key: string]: unknown
 }
 
@@ -43,11 +44,11 @@ interface L0Entity {
 }
 
 const statusMap: Record<string, { label: string; color: string }> = {
-  pending: { label: '待编译', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' },
-  processing: { label: '编译中', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
-  completed: { label: '已完成', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
-  failed: { label: '失败', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
-  partial: { label: '部分完成', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
+  pending: { label: '待编译', color: 'badge badge--pending' },
+  processing: { label: '编译中', color: 'badge badge--processing' },
+  completed: { label: '已完成', color: 'badge badge--completed' },
+  failed: { label: '失败', color: 'badge badge--failed' },
+  partial: { label: '部分完成', color: 'badge badge--partial' },
 }
 
 function PinIcon({ className }: { className?: string }) {
@@ -73,34 +74,61 @@ function getTypeIcon(type: string): React.ComponentType<{className?: string}> | 
 
 const TYPE_LABELS: Record<string, string> = { person: '人物', location: '地点', organization: '组织', event: '事件', object: '物品', concept: '概念' }
 
+/** Extract a meaningful heading from summary text. */
+function extractHeading(text: string): string {
+  if (!text) return '(无标题)'
+  // Markdown heading: # Title or ## Title
+  const mdMatch = text.match(/^#{1,3}\s+(.+)/)
+  if (mdMatch) return mdMatch[1].trim()
+  // Chinese chapter pattern
+  const zhMatch = text.match(/^(第[一二三四五六七八九十百千万\d]+\s*[章节回卷集篇幕][^\n.]*)/)
+  if (zhMatch) return zhMatch[1].trim()
+  // First sentence (up to 。or . or \n, max 60 chars)
+  const firstSentence = text.match(/^[^。\n.]{2,60}?[。\n.]?/)
+  if (firstSentence) {
+    const s = firstSentence[0].replace(/[。\n.]$/, '').trim()
+    return s.length > 50 ? s.slice(0, 50) + '...' : s
+  }
+  return text.slice(0, 60) + (text.length > 60 ? '...' : '')
+}
+
 export function DocumentDetail() {
   const { kbId, docId } = useParams<{ kbId: string; docId: string }>()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<LevelTab>('l1')
   const [detail, setDetail] = useState<DocumentDetailData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const fetchDetail = useCallback(() => {
     if (!kbId || !docId) return
+    setLoading(true)
+    setError(null)
     fetch(`${API_BASE}/api/documents/${docId}/detail?kb_id=${kbId}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
       .then(data => { setDetail(data); setLoading(false) })
-      .catch(() => setLoading(false))
+      .catch(e => { setError(e.message); setLoading(false) })
   }, [kbId, docId])
+
+  useEffect(() => { fetchDetail() }, [fetchDetail])
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent"></div>
+        <div className="animate-spin rounded-full document-detail__spinner"></div>
       </div>
     )
   }
 
-  if (!detail) {
+  if (error || !detail) {
     return (
       <div className="flex flex-col items-center justify-center h-full">
-        <p className="text-stone-500 dark:text-stone-400 mb-4">未找到文档详情</p>
-        <button onClick={() => navigate(-1)} className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm">返回</button>
+        <p className="document-detail__error-text mb-2">{error || '未找到文档详情'}</p>
+        <button onClick={fetchDetail} className="document-detail__btn-retry mb-2">重试</button>
+        <button onClick={() => navigate(-1)} className="text-sm document-detail__back-link">返回</button>
       </div>
     )
   }
@@ -120,10 +148,10 @@ export function DocumentDetail() {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="document-detail__header">
         <Link
           to={`/knowledge/${kbId}`}
-          className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-slate-700 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+          className="document-detail__back-btn"
           title="返回知识库"
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -131,20 +159,20 @@ export function DocumentDetail() {
           </svg>
         </Link>
         <div className="min-w-0">
-          <h1 className="text-xl font-bold text-stone-800 dark:text-stone-100 truncate">{filename}</h1>
-          <p className="text-xs text-stone-400 dark:text-stone-500 mt-0.5">
+          <h1 className="document-detail__title truncate">{filename}</h1>
+          <p className="document-detail__meta-text">
             {formatSize(fileSize)} · {fileType.toUpperCase()} · {createdAt ? new Date(createdAt).toLocaleDateString('zh-CN') : '未知日期'}
           </p>
         </div>
         {detail.kb_compile_status && (
-          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusMap[detail.kb_compile_status]?.color || 'bg-gray-100 text-gray-600'}`}>
+          <span className={`document-detail__status-badge ${statusMap[detail.kb_compile_status]?.color || 'badge badge--muted'}`}>
             {statusMap[detail.kb_compile_status]?.label || detail.kb_compile_status}
           </span>
         )}
       </div>
 
       {/* Level Tabs */}
-      <div className="flex gap-1 mb-4 border-b border-stone-200 dark:border-slate-700">
+      <div className="document-detail__tab-bar">
         <TabButton
           label={`L1 摘要 (${detail.l1_summary.batch_count} 条)`}
           active={activeTab === 'l1'}
@@ -165,7 +193,7 @@ export function DocumentDetail() {
       {/* Tab Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {activeTab === 'l1' && <L1Tab kbId={kbId!} docId={docId!} />}
-        {activeTab === 'l2' && <L2Tab kbId={kbId!} docId={docId!} totalChunks={detail.l2_summary.chunk_count} />}
+        {activeTab === 'l2' && <L2Tab kbId={kbId!} docId={docId!} totalChunks={detail.l2_summary.chunk_count} fileType={fileType} />}
         {activeTab === 'l0' && <L0Tab kbId={kbId!} docId={docId!} />}
       </div>
     </div>
@@ -176,11 +204,7 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
   return (
     <button
       onClick={onClick}
-      className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${
-        active
-          ? 'border-amber-500 text-amber-700 dark:text-amber-400'
-          : 'border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-300'
-      }`}
+      className={`document-detail__tab-btn ${active ? 'document-detail__tab-btn--active' : ''}`}
     >
       {label}
     </button>
@@ -194,27 +218,26 @@ function L1Tab({ kbId, docId }: { kbId: string; docId: string }) {
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const limit = 50
 
-  useEffect(() => {
-    fetchSummaries()
-  }, [kbId, docId, offset])
-
-  const fetchSummaries = async () => {
+  const fetchSummaries = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
       const res = await fetch(`${API_BASE}/api/documents/${docId}/l1-summaries?kb_id=${kbId}&offset=${offset}&limit=${limit}`)
-      if (res.ok) {
-        const data = await res.json()
-        setSummaries(data.summaries || [])
-        setTotal(data.total || 0)
-      }
-    } catch (e) {
-      console.error('Failed to fetch L1 summaries:', e)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setSummaries(data.summaries || [])
+      setTotal(data.total || 0)
+    } catch (e: any) {
+      setError(e.message)
     }
     setLoading(false)
-  }
+  }, [kbId, docId, offset])
+
+  useEffect(() => { fetchSummaries() }, [fetchSummaries])
 
   const toggleExpand = (idx: number) => {
     setExpanded(prev => {
@@ -226,51 +249,69 @@ function L1Tab({ kbId, docId }: { kbId: string; docId: string }) {
   }
 
   if (loading && summaries.length === 0) {
-    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent"></div></div>
+    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full document-detail__spinner"></div></div>
+  }
+
+  if (error && summaries.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full">
+        <p className="document-detail__error-text mb-2">加载L1摘要失败: {error}</p>
+        <button onClick={fetchSummaries} className="document-detail__btn-retry">重试</button>
+      </div>
+    )
   }
 
   if (summaries.length === 0) {
-    return <div className="flex flex-col items-center justify-center h-full"><FileTextIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" /><p className="text-stone-500 dark:text-stone-400">暂无 L1 摘要</p></div>
+    return <div className="flex flex-col items-center justify-center h-full"><FileTextIcon className="document-detail__empty-icon mx-auto mb-3" /><p className="text-secondary">暂无 L1 摘要</p></div>
   }
 
   return (
-    <div className="h-full overflow-y-auto space-y-3">
+    <div className="document-detail__l1-list">
       {summaries.map((entry, i) => {
         const globalIdx = offset + i
         const summaryText = (entry.summary as string) || (entry.content as string) || ''
         const entities = entry.entities_mentioned || []
         const chunkIds = entry.chunk_ids || []
         const isExpanded = expanded.has(globalIdx)
+        const heading = extractHeading(summaryText)
 
         return (
           <div
             key={globalIdx}
-            className="bg-white dark:bg-slate-800 rounded-lg border border-stone-200 dark:border-slate-700 overflow-hidden"
+            className="document-detail__l1-card"
           >
             <button
               onClick={() => toggleExpand(globalIdx)}
-              className="w-full flex items-center justify-between p-4 text-left hover:bg-stone-50 dark:hover:bg-slate-700/50 transition-colors"
+              className="document-detail__l1-card-header"
             >
               <div className="flex items-center gap-3 min-w-0">
-                <span className="text-xs font-mono text-stone-400 dark:text-stone-500 w-10 flex-shrink-0">#{globalIdx + 1}</span>
-                <span className="text-sm font-medium text-stone-700 dark:text-stone-300 truncate">{summaryText.slice(0, 100)}{summaryText.length > 100 ? '...' : ''}</span>
+                <span className="document-detail__l1-index">#{globalIdx + 1}</span>
+                <span className="text-sm font-medium text-secondary truncate">{heading}</span>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {entities.length > 0 && (
-                  <span className="text-xs text-stone-400 dark:text-stone-500">{entities.length} 实体</span>
+                  <div className="flex items-center gap-1">
+                    {entities.slice(0, 3).map((ent, ei) => {
+                      const label = typeof ent === 'string' ? ent : typeof (ent as any)?.name === 'string' ? (ent as any).name : JSON.stringify(ent)
+                      return (
+                      <span key={ei} className="document-detail__entity-tag truncate">{label}</span>
+                      )
+                    })}
+                    {entities.length > 3 && <span className="text-xs text-muted">+{entities.length - 3}</span>}
+                  </div>
                 )}
-                <svg className={`w-4 h-4 text-stone-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className={`document-detail__chevron-icon ${isExpanded ? 'document-detail__chevron-icon--expanded' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
                 </svg>
               </div>
             </button>
             {isExpanded && (
-              <div className="px-4 pb-4 border-t border-stone-100 dark:border-slate-700">
-                <div className="mt-3 prose prose-sm dark:prose-invert max-w-none">
+              <div className="document-detail__l1-card-body">
+                <div className="document-detail__prose mt-3">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{summaryText}</ReactMarkdown>
                 </div>
                 {chunkIds.length > 0 && (
-                  <p className="text-xs text-stone-400 dark:text-stone-500 mt-2">覆盖 {chunkIds.length} 个 L2 片段</p>
+                  <p className="text-xs text-muted mt-2">覆盖 {chunkIds.length} 个 L2 片段</p>
                 )}
               </div>
             )}
@@ -280,10 +321,10 @@ function L1Tab({ kbId, docId }: { kbId: string; docId: string }) {
 
       {/* Pagination */}
       {offset > 0 && (
-        <button onClick={() => setOffset(Math.max(0, offset - limit))} className="w-full py-2 text-sm text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors">← 上一页</button>
+        <button onClick={() => setOffset(Math.max(0, offset - limit))} className="document-detail__page-btn">← 上一页</button>
       )}
       {offset + limit < total && (
-        <button onClick={() => setOffset(offset + limit)} className="w-full py-2 text-sm text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors">下一页 →</button>
+        <button onClick={() => setOffset(offset + limit)} className="document-detail__page-btn">下一页 →</button>
       )}
     </div>
   )
@@ -293,40 +334,49 @@ function L1Tab({ kbId, docId }: { kbId: string; docId: string }) {
 
 const MAX_CHUNKS_PER_CHAPTER = 200
 
-function L2Tab({ kbId, docId, totalChunks }: { kbId: string; docId: string; totalChunks: number }) {
+function L2Tab({ kbId, docId, totalChunks, fileType }: { kbId: string; docId: string; totalChunks: number; fileType: string }) {
   const [chapters, setChapters] = useState<Chapter[]>([])
   const [selectedChapter, setSelectedChapter] = useState<Chapter | null>(null)
   const [content, setContent] = useState('')
   const [contentLoading, setContentLoading] = useState(false)
+  const [contentError, setContentError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [tocError, setTocError] = useState<string | null>(null)
+  const [continuousMode, setContinuousMode] = useState(false)
+  const [allContent, setAllContent] = useState<Map<string, string>>(new Map())
+  const [loadingAll, setLoadingAll] = useState(false)
+  const [excelMarkdown, setExcelMarkdown] = useState<string | null>(null)
+  const [excelLoading, setExcelLoading] = useState(false)
+  const [excelError, setExcelError] = useState<string | null>(null)
+  const [showRawMarkdown, setShowRawMarkdown] = useState(false)
 
-  useEffect(() => {
-    fetchChapters()
-  }, [kbId, docId])
+  const isExcel = fileType === 'xlsx'
 
-  const fetchChapters = async () => {
+  const fetchChapters = useCallback(async () => {
     setLoading(true)
+    setTocError(null)
     try {
       const res = await fetch(`${API_BASE}/api/documents/${docId}/l2-toc?kb_id=${kbId}`)
-      if (res.ok) {
-        const data = await res.json()
-        setChapters(data.chapters || [])
-      }
-    } catch (e) {
-      console.error('Failed to fetch L2 TOC:', e)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setChapters(data.chapters || [])
+    } catch (e: any) {
+      setTocError(e.message)
     }
     setLoading(false)
-  }
+  }, [kbId, docId])
 
-  const loadChapter = async (chapter: Chapter) => {
+  useEffect(() => { fetchChapters() }, [fetchChapters])
+
+  const loadChapter = useCallback(async (chapter: Chapter) => {
     setSelectedChapter(chapter)
     setContentLoading(true)
+    setContentError(null)
     setContent('')
 
     const startIdx = chapter.chunk_index
     const endIdx = chapter.chunk_end !== undefined ? chapter.chunk_end : chapter.chunk_index
 
-    // Build indices list (cap at 200 chunks per chapter like DeepAnalyze)
     const indices: number[] = []
     for (let i = startIdx; i <= endIdx && i < totalChunks && indices.length < MAX_CHUNKS_PER_CHAPTER; i++) {
       indices.push(i)
@@ -335,53 +385,195 @@ function L2Tab({ kbId, docId, totalChunks }: { kbId: string; docId: string; tota
     try {
       const indicesStr = indices.join(',')
       const res = await fetch(`${API_BASE}/api/documents/${docId}/l2-batch?kb_id=${kbId}&indices=${indicesStr}`)
-      if (res.ok) {
-        const data: L2BatchResult = await res.json()
-        setContent(data.merged_content || '')
-      }
-    } catch (e) {
-      console.error('Failed to load chapter:', e)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data: L2BatchResult = await res.json()
+      setContent(data.merged_content || '')
+    } catch (e: any) {
+      setContentError(e.message)
     }
     setContentLoading(false)
-  }
+  }, [kbId, docId, totalChunks])
+
+  const loadAllChapters = useCallback(async () => {
+    if (chapters.length === 0) return
+    setLoadingAll(true)
+    const newContent = new Map(allContent)
+    for (const chapter of chapters) {
+      if (chapter.is_volume) continue
+      const key = `${chapter.chunk_index}-${chapter.chunk_end}`
+      if (newContent.has(key)) continue
+      const startIdx = chapter.chunk_index
+      const endIdx = chapter.chunk_end !== undefined ? chapter.chunk_end : chapter.chunk_index
+      const indices: number[] = []
+      for (let i = startIdx; i <= endIdx && i < totalChunks && indices.length < MAX_CHUNKS_PER_CHAPTER; i++) {
+        indices.push(i)
+      }
+      try {
+        const res = await fetch(`${API_BASE}/api/documents/${docId}/l2-batch?kb_id=${kbId}&indices=${indices.join(',')}`)
+        if (res.ok) {
+          const data: L2BatchResult = await res.json()
+          newContent.set(key, data.merged_content || '')
+        }
+      } catch { /* skip failed chapters */ }
+    }
+    setAllContent(newContent)
+    setLoadingAll(false)
+    setContinuousMode(true)
+  }, [chapters, allContent, kbId, docId, totalChunks])
+
+  // Fetch Excel markdown on demand
+  useEffect(() => {
+    if (!isExcel) return
+    setExcelLoading(true)
+    setExcelError(null)
+    fetch(`${API_BASE}/api/documents/${kbId}/${docId}/parsed`)
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
+      .then(data => { setExcelMarkdown(data.content); setExcelLoading(false) })
+      .catch(e => { setExcelError(e.message); setExcelLoading(false) })
+  }, [kbId, docId, isExcel])
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent"></div></div>
+    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full document-detail__spinner"></div></div>
+  }
+
+  if (tocError && chapters.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full">
+        <p className="document-detail__error-text mb-2">加载章节列表失败: {tocError}</p>
+        <button onClick={fetchChapters} className="document-detail__btn-retry">重试</button>
+      </div>
+    )
   }
 
   if (totalChunks === 0) {
-    return <div className="flex flex-col items-center justify-center h-full"><DocumentIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" /><p className="text-stone-500 dark:text-stone-400">暂无 L2 内容</p></div>
+    return <div className="flex flex-col items-center justify-center h-full"><DocumentIcon className="document-detail__empty-icon mx-auto mb-3" /><p className="text-secondary">暂无 L2 内容</p></div>
   }
 
+  // Excel mode — use ExcelViewer
+  if (isExcel) {
+    if (excelLoading) {
+      return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full document-detail__spinner"></div></div>
+    }
+    if (excelError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full">
+          <p className="document-detail__error-text mb-2">加载Excel内容失败: {excelError}</p>
+          <button onClick={() => window.location.reload()} className="document-detail__btn-retry">重试</button>
+        </div>
+      )
+    }
+    return (
+      <div className="h-full flex flex-col">
+        <div className="document-detail__excel-toolbar">
+          <button
+            onClick={() => setShowRawMarkdown(!showRawMarkdown)}
+            className="document-detail__toggle-btn"
+          >
+            {showRawMarkdown ? '表格视图' : '原始Markdown'}
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {showRawMarkdown && excelMarkdown ? (
+            <div className="document-detail__raw-markdown-container h-full overflow-y-auto p-4">
+              <pre className="document-detail__raw-markdown-pre">{excelMarkdown}</pre>
+            </div>
+          ) : excelMarkdown ? (
+            <ExcelViewer markdown={excelMarkdown} />
+          ) : (
+            <div className="flex items-center justify-center h-full"><p className="text-muted">无内容</p></div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // Continuous reading mode
+  if (continuousMode) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="document-detail__continuous-toolbar">
+          <button
+            onClick={() => setContinuousMode(false)}
+            className="document-detail__toggle-btn"
+          >
+            章节模式
+          </button>
+          {/* Sticky chapter navigation */}
+          <select
+            className="document-detail__chapter-select"
+            onChange={(e) => {
+              const idx = parseInt(e.target.value)
+              const ch = chapters[idx]
+              if (ch) {
+                const el = document.getElementById(`chapter-${ch.chunk_index}`)
+                el?.scrollIntoView({ behavior: 'smooth' })
+              }
+            }}
+          >
+            <option value="">跳转到章节...</option>
+            {chapters.filter(c => !c.is_volume).map((ch, i) => (
+              <option key={i} value={i}>{ch.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex-1 overflow-y-auto document-detail__l1-list">
+          {chapters.filter(c => !c.is_volume).map((chapter, ci) => {
+            const key = `${chapter.chunk_index}-${chapter.chunk_end}`
+            const chapterContent = allContent.get(key)
+            return (
+              <div key={ci} id={`chapter-${chapter.chunk_index}`} className="document-detail__continuous-chapter">
+                <h2 className="document-detail__chapter-title">
+                  {chapter.name}
+                </h2>
+                {chapterContent ? (
+                  <div className="document-detail__prose">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{chapterContent}</ReactMarkdown>
+                  </div>
+                ) : (
+                  <p className="document-detail__loading-text text-sm">加载中...</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  // Default two-pane mode
   return (
-    <div className="h-full flex gap-4 min-h-0">
+    <div className="document-detail__two-pane">
       {/* Left: Chapter list */}
-      <div className="w-72 bg-white dark:bg-slate-800 rounded-xl border border-stone-200 dark:border-slate-700 flex flex-col overflow-hidden">
-        <div className="px-3 py-2 border-b border-stone-200 dark:border-slate-700">
-          <p className="text-xs font-medium text-stone-500 dark:text-stone-400">
+      <div className="document-detail__toc-panel">
+        <div className="document-detail__toc-header">
+          <p className="text-xs font-medium text-muted">
             共 {totalChunks} 片 · {chapters.length} 个章节
           </p>
+          <button
+            onClick={loadAllChapters}
+            disabled={loadingAll}
+            className="document-detail__load-all-btn"
+          >
+            {loadingAll ? '加载中...' : '加载全部'}
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
+        <div className="document-detail__toc-list">
           {chapters.map((ch, i) =>
             ch.is_volume ? (
-              // Volume header — unclickable separator
               <div
                 key={i}
-                className="px-3 py-2 mt-1 mb-0.5 rounded text-xs font-semibold text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800"
+                className="document-detail__volume-label"
               >
                 {ch.name}
               </div>
             ) : (
-              // Chapter entry — clickable
               <button
                 key={i}
                 onClick={() => loadChapter(ch)}
-                className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors ${
-                  selectedChapter?.chunk_index === ch.chunk_index
-                    ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 font-medium'
-                    : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-slate-700'
-                } pl-5`}
+                className={`document-detail__chapter-btn ${selectedChapter?.chunk_index === ch.chunk_index ? 'document-detail__chapter-btn--active' : ''}`}
               >
                 {ch.name}
               </button>
@@ -391,40 +583,45 @@ function L2Tab({ kbId, docId, totalChunks }: { kbId: string; docId: string; tota
       </div>
 
       {/* Right: Content */}
-      <div className="flex-1 bg-white dark:bg-slate-800 rounded-xl border border-stone-200 dark:border-slate-700 overflow-y-auto">
+      <div className="document-detail__content-panel">
         {contentLoading ? (
           <div className="flex items-center justify-center h-full">
-            <div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent"></div>
+            <div className="animate-spin rounded-full document-detail__spinner"></div>
+          </div>
+        ) : contentError ? (
+          <div className="flex flex-col items-center justify-center h-full">
+            <p className="document-detail__error-text mb-2">加载章节失败: {contentError}</p>
+            {selectedChapter && (
+              <button onClick={() => loadChapter(selectedChapter)} className="document-detail__btn-retry">重试</button>
+            )}
           </div>
         ) : selectedChapter ? (
           <div className="p-6">
-            {/* Chapter header */}
-            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-stone-200 dark:border-slate-700">
+            <div className="document-detail__content-title-row">
               <button
                 onClick={() => { setSelectedChapter(null); setContent('') }}
-                className="p-1 rounded hover:bg-stone-100 dark:hover:bg-slate-700 text-stone-400 hover:text-stone-600 transition-colors"
+                className="document-detail__content-back-btn"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
                 </svg>
               </button>
-              <h2 className="text-lg font-bold text-stone-800 dark:text-stone-100">{selectedChapter.name}</h2>
+              <h2 className="document-detail__content-heading">{selectedChapter.name}</h2>
             </div>
-            {/* Markdown content */}
             {content ? (
-              <div className="prose prose-sm dark:prose-invert max-w-none">
+              <div className="document-detail__prose">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {content}
                 </ReactMarkdown>
               </div>
             ) : (
-              <p className="text-stone-400 dark:text-stone-500 text-center py-8">该章节无内容</p>
+              <p className="document-detail__no-content text-center py-8">该章节无内容</p>
             )}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center h-full">
-            <DocumentIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-            <p className="text-stone-500 dark:text-stone-400">点击左侧章节加载内容</p>
+            <DocumentIcon className="document-detail__empty-icon mx-auto mb-3" />
+            <p className="text-secondary">点击左侧章节加载内容</p>
           </div>
         )}
       </div>
@@ -437,43 +634,60 @@ function L2Tab({ kbId, docId, totalChunks }: { kbId: string; docId: string; tota
 function L0Tab({ kbId, docId }: { kbId: string; docId: string }) {
   const [entities, setEntities] = useState<L0Entity[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const fetchEntities = useCallback(() => {
+    setLoading(true)
+    setError(null)
     fetch(`${API_BASE}/api/documents/${docId}/l0-entities?kb_id=${kbId}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
       .then(data => { setEntities(data.entities || []); setLoading(false) })
-      .catch(() => setLoading(false))
+      .catch(e => { setError(e.message); setLoading(false) })
   }, [kbId, docId])
 
+  useEffect(() => { fetchEntities() }, [fetchEntities])
+
   if (loading) {
-    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent"></div></div>
+    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full document-detail__spinner"></div></div>
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full">
+        <p className="document-detail__error-text mb-2">加载实体失败: {error}</p>
+        <button onClick={fetchEntities} className="document-detail__btn-retry">重试</button>
+      </div>
+    )
   }
 
   if (entities.length === 0) {
-    return <div className="flex flex-col items-center justify-center h-full"><GraphIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" /><p className="text-stone-500 dark:text-stone-400">暂无关联实体</p></div>
+    return <div className="flex flex-col items-center justify-center h-full"><GraphIcon className="document-detail__empty-icon mx-auto mb-3" /><p className="text-secondary">暂无关联实体</p></div>
   }
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+    <div className="document-detail__l0-container">
+      <div className="document-detail__l0-grid">
         {entities.map((entity, i) => (
           <div
             key={i}
-            className="bg-white dark:bg-slate-800 rounded-lg border border-stone-200 dark:border-slate-700 p-4"
+            className="document-detail__entity-card"
           >
             <div className="flex items-center gap-2 mb-2">
               {(() => { const Icon = getTypeIcon(entity.type); return Icon ? <Icon className="w-5 h-5" /> : <InfoIcon className="w-5 h-5" />; })()}
-              <h3 className="text-sm font-semibold text-stone-700 dark:text-stone-300">{entity.name}</h3>
-              <span className="text-xs px-1.5 py-0.5 bg-stone-100 dark:bg-slate-700 rounded text-stone-500 dark:text-stone-400">
-                {TYPE_LABELS[entity.type] || entity.type}
+              <h3 className="text-sm font-semibold text-secondary">{String(entity.name)}</h3>
+              <span className="document-detail__entity-type-badge">
+                {TYPE_LABELS[String(entity.type)] || String(entity.type)}
               </span>
             </div>
             {entity.attributes && Object.keys(entity.attributes).length > 0 && (
-              <div className="space-y-1 mt-2">
+              <div className="document-detail__entity-attrs mt-2">
                 {Object.entries(entity.attributes).map(([k, v]) => (
-                  <div key={k} className="flex justify-between text-xs">
-                    <span className="text-stone-400 dark:text-stone-500">{k}</span>
-                    <span className="text-stone-600 dark:text-stone-300 truncate ml-2 max-w-32">{String(v)}</span>
+                  <div key={k} className="document-detail__entity-attr-row">
+                    <span className="text-muted">{k}</span>
+                    <span className="document-detail__entity-attr-value truncate ml-2">{typeof v === 'string' || typeof v === 'number' ? String(v) : JSON.stringify(v)}</span>
                   </div>
                 ))}
               </div>

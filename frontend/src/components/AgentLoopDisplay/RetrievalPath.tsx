@@ -21,46 +21,49 @@ export function RetrievalPath({ event }: RetrievalPathProps) {
     return { level: null, content: node }
   }
 
+  const nodeLevelClass = (level: string | null) => {
+    if (level === 'L0') return 'retrieval-path__node--l0'
+    if (level === 'L1') return 'retrieval-path__node--l1'
+    if (level === 'L2') return 'retrieval-path__node--l2'
+    return 'retrieval-path__node--default'
+  }
+
+  const confidenceClass = event.confidence === 'EXTRACTED'
+    ? 'retrieval-path__conf--extracted'
+    : event.confidence === 'INFERRED'
+    ? 'retrieval-path__conf--inferred'
+    : 'retrieval-path__conf--default'
+
   return (
-    <div className="retrieval-path bg-gradient-to-r from-amber-50 to-blue-50 dark:from-amber-900/10 dark:to-blue-900/10 rounded-lg p-3 border border-amber-200 dark:border-amber-800">
+    <div className="retrieval-path">
       {/* 头部 */}
-      <div className="flex items-center gap-2 mb-2">
-        <SearchIcon className="w-5 h-5" />
-        <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
-          检索路径
-        </span>
+      <div className="retrieval-path__header">
+        <SearchIcon className="retrieval-path__icon" />
+        <span className="retrieval-path__title">检索路径</span>
         {event.relevance_score !== undefined && (
-          <span className="ml-auto text-xs font-mono text-blue-600 dark:text-blue-400">
+          <span className="retrieval-path__score">
             得分: {event.relevance_score.toFixed(3)}
           </span>
         )}
       </div>
 
       {/* 路径节点 */}
-      <div className="flex items-start gap-1 overflow-x-auto pb-1">
+      <div className="retrieval-path__nodes">
         {event.drill_path.map((node, i) => {
           const parsed = parsePathNode(node)
           return (
-            <div key={i} className="flex items-center gap-1 flex-shrink-0">
+            <div key={i} className="retrieval-path__node-wrap">
               {/* 节点卡片 */}
-              <div className={`px-2 py-1 rounded-lg text-xs ${
-                parsed.level === 'L0'
-                  ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800'
-                  : parsed.level === 'L1'
-                  ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800'
-                  : parsed.level === 'L2'
-                  ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-800'
-                  : 'bg-stone-100 dark:bg-slate-700 text-stone-700 dark:text-stone-400 border border-stone-200 dark:border-slate-600'
-              }`}>
+              <div className={`retrieval-path__node ${nodeLevelClass(parsed.level)}`}>
                 {parsed.level && (
-                  <span className="font-mono font-bold mr-1">{parsed.level}</span>
+                  <span className="retrieval-path__node-level">{parsed.level}</span>
                 )}
-                <span className="truncate max-w-24">{parsed.content}</span>
+                <span className="retrieval-path__node-content">{parsed.content}</span>
               </div>
 
               {/* 连接箭头 */}
               {i < event.drill_path!.length - 1 && (
-                <svg className="w-4 h-4 text-amber-400 dark:text-amber-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="retrieval-path__arrow" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
                 </svg>
               )}
@@ -71,15 +74,9 @@ export function RetrievalPath({ event }: RetrievalPathProps) {
 
       {/* Confidence */}
       {event.confidence && (
-        <div className="mt-2 flex items-center gap-2">
-          <span className="text-xs text-stone-500 dark:text-stone-400">置信度：</span>
-          <span className={`px-2 py-0.5 rounded text-xs ${
-            event.confidence === 'EXTRACTED'
-              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-              : event.confidence === 'INFERRED'
-              ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
-              : 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400'
-          }`}>
+        <div className="retrieval-path__conf-row">
+          <span className="retrieval-path__conf-label">置信度：</span>
+          <span className={`retrieval-path__conf-badge ${confidenceClass}`}>
             {event.confidence}
           </span>
         </div>

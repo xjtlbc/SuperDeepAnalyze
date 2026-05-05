@@ -3,6 +3,7 @@ import type { AgentEvent } from '../../types/agent'
 import { EventBlock } from './EventBlock'
 import { ThinkingBlock } from './ThinkingBlock'
 import { DetailModal } from './DetailModal'
+import WorkflowBlock from './WorkflowBlock'
 
 interface AgentLoopDisplayProps {
   thinkingEvents: AgentEvent[]
@@ -33,20 +34,24 @@ export function AgentLoopDisplay({ thinkingEvents, actionEvents, onClear }: Agen
     })
   }
 
+  // Separate workflow events from regular action events
+  const workflowEvents = actionEvents.filter(e => e.type === 'workflow_result')
+  const regularActions = actionEvents.filter(e => e.type !== 'workflow_result')
+
   const totalEvents = thinkingEvents.length + actionEvents.length
   if (totalEvents === 0) return null
 
   return (
-    <div className="agent-loop-display space-y-3">
+    <div className="agent-loop-display">
       {/* CoT 思维链面板 */}
       {thinkingEvents.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-medium text-purple-600 dark:text-purple-400">
+        <div className="agent-loop__section">
+          <div className="agent-loop__section-header">
+            <span className="agent-loop__label agent-loop__label--purple">
               推理过程 ({thinkingEvents.length})
             </span>
           </div>
-          <div className="space-y-1">
+          <div className="agent-loop__event-list agent-loop__event-list--tight">
             {thinkingEvents.map((event) => (
               <ThinkingBlock
                 key={event.id}
@@ -59,16 +64,37 @@ export function AgentLoopDisplay({ thinkingEvents, actionEvents, onClear }: Agen
         </div>
       )}
 
-      {/* 工具调用 / 动作事件列表 */}
-      {actionEvents.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
-              工具调用 ({actionEvents.length})
+      {/* 工作流事件 */}
+      {workflowEvents.length > 0 && (
+        <div className="agent-loop__section">
+          <div className="agent-loop__section-header">
+            <span className="agent-loop__label agent-loop__label--cyan">
+              工作流 ({workflowEvents.length})
             </span>
           </div>
-          <div className="space-y-1.5">
-            {actionEvents.map(event => (
+          <div className="agent-loop__event-list agent-loop__event-list--tight">
+            {workflowEvents.map(event => (
+              <WorkflowBlock
+                key={event.id}
+                event={event}
+                expanded={expandedActions.has(event.id)}
+                onToggle={() => toggleAction(event.id)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 工具调用 / 动作事件列表 */}
+      {regularActions.length > 0 && (
+        <div className="agent-loop__section">
+          <div className="agent-loop__section-header">
+            <span className="agent-loop__label agent-loop__label--amber">
+              工具调用 ({regularActions.length})
+            </span>
+          </div>
+          <div className="agent-loop__event-list">
+            {regularActions.map(event => (
               <EventBlock
                 key={event.id}
                 event={event}
@@ -85,7 +111,7 @@ export function AgentLoopDisplay({ thinkingEvents, actionEvents, onClear }: Agen
       {onClear && (
         <button
           onClick={onClear}
-          className="text-xs text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+          className="agent-loop__clear-btn"
         >
           清除事件流
         </button>

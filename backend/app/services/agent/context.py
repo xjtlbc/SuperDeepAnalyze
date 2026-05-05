@@ -48,6 +48,9 @@ class AgentContext:
     # Historical messages from previous turns in this session (for multi-turn memory)
     history_messages: list[dict] = field(default_factory=list)
 
+    # KB compilation state for graceful degradation (optional)
+    kb_state: Any = None
+
     # Extra metadata for observability
     metadata: dict = field(default_factory=dict)
 

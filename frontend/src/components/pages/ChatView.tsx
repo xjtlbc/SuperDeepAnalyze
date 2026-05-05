@@ -61,32 +61,32 @@ function ToolCallCard({ event }: { event: ToolEvent }) {
   const outputPreview = (event.output || '').slice(0, 100)
 
   return (
-    <div className="border-l-2 border-amber-400 pl-3 py-1.5">
+    <div className="chat-tool-call">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 text-xs text-stone-600 dark:text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors w-full text-left"
+        className="chat-tool-call__toggle"
       >
-        <IconComp className="w-4 h-4" />
+        <IconComp className="icon-sm" />
         <span className="font-medium">{label}</span>
         {event.duration && (
-          <span className="text-stone-400 dark:text-stone-500 ml-auto">{event.duration}s</span>
+          <span className="chat-tool-call__duration">{event.duration}s</span>
         )}
-        <span className={`text-stone-400 ml-auto transition-transform ${expanded ? 'rotate-90' : ''}`}>
-          ▸
+        <span className={`chat-tool-call__chevron ${expanded ? 'chat-tool-call__chevron--expanded' : ''}`}>
+          {'▸'}
         </span>
       </button>
       {expanded && (
-        <div className="mt-2 space-y-1 text-xs">
+        <div className="chat-tool-call__details">
           {inputPreview && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">输入：</span>
-              <code className="text-stone-700 dark:text-stone-300">{inputPreview}</code>
+            <div className="chat-tool-call__detail-block">
+              <span className="chat-tool-call__detail-label">{'输入：'}</span>
+              <code className="chat-tool-call__detail-code">{inputPreview}</code>
             </div>
           )}
           {outputPreview && (
-            <div className="bg-stone-100 dark:bg-slate-700 rounded px-2 py-1.5">
-              <span className="text-stone-500 dark:text-stone-400">输出：</span>
-              <p className="text-stone-700 dark:text-stone-300 mt-1 whitespace-pre-wrap">{outputPreview}{(event.output || '').length > 100 ? '...' : ''}</p>
+            <div className="chat-tool-call__detail-block">
+              <span className="chat-tool-call__detail-label">{'输出：'}</span>
+              <p className="chat-tool-call__detail-output">{outputPreview}{(event.output || '').length > 100 ? '...' : ''}</p>
             </div>
           )}
         </div>
@@ -334,24 +334,24 @@ export function ChatView() {
 
   if (kbs.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full">
-        <ChatIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-        <p className="text-stone-600 dark:text-stone-300 font-medium">暂无知识库，请先创建</p>
+      <div className="chat-empty-state">
+        <ChatIcon className="chat-empty-icon" />
+        <p className="chat-view__center-text">{'暂无知识库，请先创建'}</p>
       </div>
     )
   }
 
   if (!currentKbId) {
     return (
-      <div className="flex flex-col items-center justify-center h-full">
-        <ChatIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-        <p className="text-stone-600 dark:text-stone-300 font-medium mb-4">选择知识库开始对话</p>
+      <div className="chat-empty-state">
+        <ChatIcon className="chat-empty-icon" />
+        <p className="chat-view__center-text chat-empty-text">{'选择知识库开始对话'}</p>
         <select
           value=""
           onChange={(e) => setCurrentKbId(e.target.value)}
-          className="px-4 py-2 rounded-lg border border-stone-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 text-sm"
+          className="chat-view__select"
         >
-          <option value="">请选择...</option>
+          <option value="">{'请选择...'}</option>
           {kbs.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
         </select>
       </div>
@@ -359,46 +359,44 @@ export function ChatView() {
   }
 
   return (
-    <div className="h-full flex">
-      <div className="w-56 border-r border-stone-200 dark:border-slate-700 flex flex-col bg-white/50 dark:bg-slate-800/50">
-        <div className="p-3 border-b border-stone-200 dark:border-slate-700 flex items-center justify-between gap-2">
-          <select
-            value={currentKbId}
-            onChange={(e) => { setCurrentKbId(e.target.value); setCurrentSession(null) }}
-            className="flex-1 px-2 py-1.5 rounded-lg border border-stone-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 text-xs truncate"
-          >
-            {kbs.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
-          </select>
-          <button
-            onClick={createSession}
-            className="px-2 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-medium transition-colors"
-          >
-            +
-          </button>
+    <div className="chat-container">
+      <div className="chat-sidebar">
+        <div className="chat-sidebar-header">
+          <div className="chat-sidebar-header__row">
+            <select
+              value={currentKbId}
+              onChange={(e) => { setCurrentKbId(e.target.value); setCurrentSession(null) }}
+              className="chat-view__select chat-view__select--xs"
+            >
+              {kbs.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
+            </select>
+            <button
+              onClick={createSession}
+              className="chat-view__new-session-btn"
+            >
+              {'+'}
+            </button>
+          </div>
         </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+        <div className="chat-session-list">
           {sessions.map((s) => (
             <div
               key={s.id}
-              className={`group flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors ${
-                currentSession === s.id
-                  ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 font-medium'
-                  : 'text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-slate-700'
-              }`}
+              className={`chat-session-item ${currentSession === s.id ? 'chat-session-item--active' : ''}`}
             >
               <button
                 onClick={() => setCurrentSession(s.id)}
-                className="flex-1 text-left truncate"
+                className="chat-session-btn"
               >
-                <p className="truncate">{s.title}</p>
-                <p className="text-stone-400 dark:text-stone-500 mt-0.5 font-mono">{s.id.slice(0, 12)}</p>
+                <p className="chat-session-title">{s.title}</p>
+                <p className="chat-session-id">{s.id.slice(0, 12)}</p>
               </button>
               <button
                 onClick={(e) => deleteSession(s.id, e)}
-                className="opacity-0 group-hover:opacity-100 p-1 text-stone-400 hover:text-red-500 transition-opacity"
+                className="chat-session-delete-btn"
                 title="删除会话"
               >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="chat-session-delete-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                 </svg>
               </button>
@@ -407,47 +405,43 @@ export function ChatView() {
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="chat-main">
         {currentSession ? (
           <>
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="chat-message-list">
               {/* Connection status indicator */}
               {wsStatus === 'connecting' && (
-                <div className="flex justify-center">
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-stone-100 dark:bg-slate-700 rounded-full text-xs text-stone-500 dark:text-stone-400">
-                    <div className="animate-spin rounded-full h-3 w-3 border-2 border-stone-400 border-t-transparent"></div>
-                    连接中...
+                <div className="chat-status-bar">
+                  <div className="chat-status-pill chat-status-pill--connecting">
+                    <div className="chat-spinner chat-spinner--sm"></div>
+                    {'连接中...'}
                   </div>
                 </div>
               )}
               {wsStatus === 'disconnected' && (
-                <div className="flex justify-center">
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 dark:bg-red-900/20 rounded-full text-xs text-red-500 dark:text-red-400 border border-red-200 dark:border-red-800">
-                    <div className="w-2 h-2 rounded-full bg-red-500"></div>
-                    连接已断开，请刷新页面重试
+                <div className="chat-status-bar">
+                  <div className="chat-status-pill chat-status-pill--disconnected">
+                    <div className="chat-disconnected-dot"></div>
+                    {'连接已断开，请刷新页面重试'}
                   </div>
                 </div>
               )}
 
               {messages.map((msg) => (
-                <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className="flex flex-col max-w-2xl">
-                    <span className={`text-xs text-stone-400 dark:text-stone-500 mb-1 px-1 ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
+                <div key={msg.id} className={`chat-message-row ${msg.role === 'user' ? 'chat-message-row--user' : 'chat-message-row--assistant'}`}>
+                  <div className="chat-message-col">
+                    <span className={`chat-message-sender ${msg.role === 'user' ? 'chat-message-sender--user' : 'chat-message-sender--assistant'}`}>
                       {msg.role === 'user' ? '我' : '智能助手'}
                     </span>
-                    <div className={`px-4 py-3 rounded-xl text-sm leading-relaxed ${
-                      msg.role === 'user'
-                        ? 'bg-amber-600 text-white rounded-br-sm'
-                        : 'bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 rounded-bl-sm border border-stone-200 dark:border-slate-600'
-                    }`}>
+                    <div className={`chat-message-bubble ${msg.role === 'user' ? 'chat-message-bubble--user' : 'chat-message-bubble--assistant'}`}>
                       {msg.role === 'assistant' ? (
-                        <div className="prose prose-sm dark:prose-invert max-w-none">
+                        <div className="chat-md-content">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {msg.content}
                           </ReactMarkdown>
                         </div>
                       ) : (
-                        <p className="whitespace-pre-wrap">{msg.content}</p>
+                        <p className="chat-message-user-text">{msg.content}</p>
                       )}
                     </div>
                   </div>
@@ -456,38 +450,34 @@ export function ChatView() {
 
               {/* Real-time tool calls */}
               {(toolEvents.length > 0 || agentProgress) && (
-                <div className="flex justify-start">
-                  <div className="max-w-2xl bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-800 p-3 space-y-2">
+                <div className="chat-message-row chat-message-row--assistant">
+                  <div className="chat-agent-panel">
                     {/* Progress bar */}
                     {agentProgress && (
-                      <div className="flex items-center gap-3 text-xs">
-                        <div className="animate-spin rounded-full h-3 w-3 border-2 border-amber-500 border-t-transparent flex-shrink-0"></div>
-                        <span className="text-amber-600 dark:text-amber-400 font-medium">
-                          第 {agentProgress.iteration}/{agentProgress.max} 轮搜索
+                      <div className="chat-agent-header">
+                        <div className="chat-spinner chat-spinner--accent"></div>
+                        <span className="chat-agent-header">
+                          {'第 '}{agentProgress.iteration}{'/'}{agentProgress.max}{' 轮搜索'}
                         </span>
-                        <span className="text-stone-400 dark:text-stone-500">
-                          已调用 {agentProgress.tools} 次工具
+                        <span className="chat-agent-progress-tools">
+                          {'已调用 '}{agentProgress.tools}{' 次工具'}
                         </span>
                       </div>
                     )}
                     {/* Context usage bar */}
                     {contextUsage && contextUsage.percent > 0 && (
-                      <div className="flex items-center gap-2 text-xs mt-1">
-                        <div className="flex-1 h-1.5 bg-stone-200 dark:bg-slate-600 rounded-full overflow-hidden">
+                      <div className="chat-context-usage">
+                      <div className="chat-context-usage__bar">
                           <div
-                            className={`h-full rounded-full transition-all ${
-                              contextUsage.percent > 80 ? 'bg-red-500' :
-                              contextUsage.percent > 60 ? 'bg-amber-500' :
-                              'bg-green-500'
-                            }`}
+                            className={`chat-context-usage__fill ${contextUsage.percent > 80 ? 'chat-context-usage__fill--danger' : contextUsage.percent > 60 ? 'chat-context-usage__fill--warning' : 'chat-context-usage__fill--ok'}`}
                             style={{ width: `${contextUsage.percent}%` }}
                           />
                         </div>
-                        <span className="text-stone-400 dark:text-stone-500 w-10 text-right">
+                        <span className="chat-context-usage__label">
                           {contextUsage.percent}%
                         </span>
                         {contextUsage.action && (
-                          <span className="text-stone-400 dark:text-stone-500 italic">
+                          <span className="chat-context-usage__action">
                             {contextUsage.action === 'microcompact' ? '已压缩早期结果' :
                              contextUsage.action === 'auto_compact' ? '已生成对话摘要' : ''}
                           </span>
@@ -499,11 +489,11 @@ export function ChatView() {
                       ev.type === 'tool_call' ? (
                         <ToolCallCard key={i} event={ev} />
                       ) : ev.type === 'thinking' && ev.content?.includes('跳过') ? (
-                        <div key={i} className="text-xs text-stone-400 dark:text-stone-500 italic">
+                        <div key={i} className="chat-thinking-italic">
                           {ev.content}
                         </div>
                       ) : ev.type === 'thinking' && !ev.content?.startsWith('正在分析') && !ev.content?.startsWith('正在思考') && !ev.content?.startsWith('信息趋于饱和') ? (
-                        <div key={i} className="text-xs text-stone-500 dark:text-stone-400 italic">
+                        <div key={i} className="chat-thinking-italic">
                           {ev.content}
                         </div>
                       ) : null
@@ -514,8 +504,8 @@ export function ChatView() {
 
               {/* Streaming content */}
               {streamingContent && (
-                <div className="flex justify-start">
-                  <div className="max-w-2xl px-4 py-3 rounded-xl text-sm leading-relaxed bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 rounded-bl-sm border border-amber-300 dark:border-amber-600">
+                <div className="chat-message-row chat-message-row--assistant">
+                  <div className="chat-streaming-content">
                     <p className="whitespace-pre-wrap">{streamingContent}</p>
                   </div>
                 </div>
@@ -524,8 +514,8 @@ export function ChatView() {
               <div ref={messagesEndRef} />
             </div>
 
-            <div className="p-4 border-t border-stone-200 dark:border-slate-700">
-              <div className="flex gap-2">
+            <div className="chat-input-area">
+              <div className="chat-input-row">
                 <input
                   type="text"
                   value={input}
@@ -533,15 +523,15 @@ export function ChatView() {
                   onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
                   placeholder="输入问题..."
                   disabled={sending}
-                  className="flex-1 px-4 py-2.5 rounded-xl border border-stone-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50"
+                  className="chat-input-field"
                 />
                 <button
                   onClick={sendMessage}
                   disabled={sending || !input.trim()}
-                  className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl text-sm font-medium transition-colors"
+                  className="chat-send-btn"
                 >
                   {sending ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                    <div className="chat-spinner chat-spinner--white"></div>
                   ) : (
                     '发送'
                   )}
@@ -550,14 +540,14 @@ export function ChatView() {
             </div>
           </>
         ) : (
-          <div className="flex flex-col items-center justify-center flex-1">
-            <ChatIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-            <p className="text-stone-500 dark:text-stone-400 mb-4">开始新的对话</p>
+          <div className="chat-empty-state">
+            <ChatIcon className="chat-empty-icon" />
+            <p className="chat-empty-text">{'开始新的对话'}</p>
             <button
               onClick={createSession}
-              className="px-6 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-medium transition-colors"
+              className="chat-empty-btn"
             >
-              创建对话
+              {'创建对话'}
             </button>
           </div>
         )}

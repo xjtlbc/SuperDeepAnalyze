@@ -95,45 +95,45 @@ export function KnowledgeBaseList() {
   }
 
   const statusMap: Record<string, { label: string; color: string }> = {
-    pending: { label: '待编译', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' },
-    processing: { label: '编译中', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
-    completed: { label: '已完成', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
-    failed: { label: '失败', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
-    partial: { label: '部分完成', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
+    pending: { label: '待编译', color: 'badge badge--pending' },
+    processing: { label: '编译中', color: 'badge badge--processing' },
+    completed: { label: '已完成', color: 'badge badge--completed' },
+    failed: { label: '失败', color: 'badge badge--failed' },
+    partial: { label: '部分完成', color: 'badge badge--partial' },
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="kb-list__container">
+      <div className="kb-list__header">
         <div>
-          <h1 className="text-2xl font-bold text-stone-800 dark:text-stone-100">知识库管理</h1>
-          <p className="text-sm text-stone-500 dark:text-stone-400 mt-1">管理知识库，上传卷宗，编译分析</p>
+          <h1 className="kb-list__title">知识库管理</h1>
+          <p className="kb-list__subtitle mt-1">管理知识库，上传卷宗，编译分析</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium transition-colors"
+          className="document-detail__btn-retry"
         >
           新建知识库
         </button>
       </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 text-sm flex items-center justify-between">
+        <div className="kb-list__error-bar mb-4">
           <span>{error}</span>
-          <button onClick={fetchKbs} className="underline text-xs ml-2">重试</button>
+          <button onClick={fetchKbs} className="kb-list__error-retry">重试</button>
         </div>
       )}
 
       {showCreate && (
-        <div className="mb-6 p-5 bg-white dark:bg-slate-800 rounded-xl border border-stone-200 dark:border-slate-700 shadow-sm">
-          <h3 className="font-semibold text-stone-800 dark:text-stone-100 mb-4">新建知识库</h3>
-          <div className="space-y-3">
+        <div className="kb-list__create-form mb-6">
+          <h3 className="kb-list__create-title mb-4">新建知识库</h3>
+          <div className="kb-list__create-fields">
             <input
               type="text"
               placeholder="知识库名称"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+              className="kb-list__input w-full"
               autoFocus
               onKeyDown={(e) => e.key === 'Enter' && createKB()}
             />
@@ -142,19 +142,19 @@ export function KnowledgeBaseList() {
               placeholder="描述（可选）"
               value={newDesc}
               onChange={(e) => setNewDesc(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-stone-800 dark:text-stone-100 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+              className="kb-list__input w-full"
             />
             <div className="flex gap-2">
               <button
                 onClick={createKB}
                 disabled={loading || !newName.trim()}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+                className="document-detail__btn-retry"
               >
                 {loading ? '创建中...' : '创建'}
               </button>
               <button
                 onClick={() => { setShowCreate(false); setNewName(''); setNewDesc('') }}
-                className="px-4 py-2 bg-stone-100 hover:bg-stone-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-stone-600 dark:text-stone-300 rounded-lg text-sm transition-colors"
+                className="kb-list__cancel-btn"
               >
                 取消
               </button>
@@ -164,43 +164,39 @@ export function KnowledgeBaseList() {
       )}
 
       {kbs.length === 0 ? (
-        <div className="text-center py-16 bg-white dark:bg-slate-800 rounded-xl border border-stone-200 dark:border-slate-700">
-          <FolderOpenIcon className="w-12 h-12 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
-          <p className="text-stone-500 dark:text-stone-400">暂无知识库</p>
-          <p className="text-sm text-stone-400 dark:text-stone-500 mt-1">点击上方按钮创建第一个知识库</p>
+        <div className="kb-list__empty-state">
+          <FolderOpenIcon className="document-detail__empty-icon mx-auto mb-3" />
+          <p className="text-secondary">暂无知识库</p>
+          <p className="text-sm text-muted mt-1">点击上方按钮创建第一个知识库</p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="kb-list__items">
           {kbs.map((kb) => (
             <div
               key={kb.id}
-              className={`p-4 bg-white dark:bg-slate-800 rounded-xl border transition-all ${
-                currentKbId === kb.id
-                  ? 'border-amber-400 dark:border-amber-500 shadow-md ring-1 ring-amber-200 dark:ring-amber-800'
-                  : 'border-stone-200 dark:border-slate-700 hover:border-amber-300 dark:hover:border-amber-600'
-              }`}
+              className={`kb-list__item ${currentKbId === kb.id ? 'kb-list__item--active' : ''}`}
             >
               <div className="flex items-start justify-between">
                 <button
                   onClick={() => { setCurrentKbId(kb.id); navigate(`/knowledge/${kb.id}`) }}
-                  className="flex-1 text-left cursor-pointer focus:outline-none"
+                  className="flex-1 text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-3">
-                    <h3 className="font-semibold text-stone-800 dark:text-stone-100">{kb.name}</h3>
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusMap[kb.compile_status]?.color || 'bg-gray-100 text-gray-600'}`}>
+                    <h3 className="font-semibold text-primary">{kb.name}</h3>
+                    <span className={`${statusMap[kb.compile_status]?.color || 'badge badge--muted'}`}>
                       {statusMap[kb.compile_status]?.label || kb.compile_status}
                     </span>
                   </div>
-                  <p className="text-sm text-stone-500 dark:text-stone-400 mt-1">
+                  <p className="text-sm text-secondary mt-1">
                     {kb.description || '暂无描述'} · {kb.document_count} 篇文档 · {kb.id}
                   </p>
-                  <p className="text-xs text-stone-400 dark:text-stone-500 mt-1">
+                  <p className="text-xs text-muted mt-1">
                     创建于 {new Date(kb.created_at).toLocaleDateString('zh-CN')}
                   </p>
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); deleteKB(kb.id) }}
-                  className="p-2 text-stone-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                  className="kb-list__delete-btn"
                   title="删除"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

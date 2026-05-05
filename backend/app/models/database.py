@@ -1,7 +1,10 @@
 import sqlite3
+import logging
 from pathlib import Path
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def get_connection() -> sqlite3.Connection:
@@ -19,6 +22,12 @@ def init_db() -> None:
     """Initialize database schema."""
     conn = get_connection()
     try:
+        # Migration: add wiki_status column if missing
+        try:
+            conn.execute("ALTER TABLE knowledge_bases ADD COLUMN wiki_status TEXT NOT NULL DEFAULT 'pending'")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS model_configs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,6 +49,7 @@ def init_db() -> None:
                 description TEXT,
                 config_version INTEGER NOT NULL DEFAULT 1,
                 compile_status TEXT NOT NULL DEFAULT 'pending',
+                wiki_status TEXT NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -205,7 +215,7 @@ def init_db() -> None:
             """)
             conn.commit()
         except Exception:
-            pass  # Table already exists
+            logger.debug("compile_queue table already exists or migration skipped")
 
         # Migration: add kb_memory table for persistent cross-session memory
         try:
@@ -249,6 +259,20 @@ def init_db() -> None:
         # Migration: add updated_at column to documents table
         try:
             conn.execute("ALTER TABLE documents ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add chunk_count column to documents table
+        try:
+            conn.execute("ALTER TABLE documents ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add compile_detail column to documents table
+        try:
+            conn.execute("ALTER TABLE documents ADD COLUMN compile_detail TEXT DEFAULT NULL")
             conn.commit()
         except Exception:
             pass  # Column already exists

@@ -1,23 +1,81 @@
 """Wiki-style knowledge browsing API."""
 
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
+from app.models.database import get_connection
 
+logger = logging.getLogger("app.wiki")
 router = APIRouter(prefix="/api/wiki", tags=["wiki"])
+
+
+def _check_kb_wiki_ready(kb_id: str) -> None:
+    """Verify KB exists and has been compiled. Raises appropriate HTTP errors.
+
+    404 = KB not found
+    503 = KB exists but compilation not completed (wiki not available)
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT compile_status, wiki_status FROM knowledge_bases WHERE id = ?", (kb_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        if row["compile_status"] not in ("completed", "partial"):
+            raise HTTPException(
+                status_code=503,
+                detail=f"Wiki not available — KB compilation status is '{row['compile_status']}'. Run compilation first.",
+            )
+    finally:
+        conn.close()
+
+
+@router.get("/{kb_id}/status")
+async def get_wiki_status(kb_id: str):
+    """Get Wiki generation status for a knowledge base."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT compile_status, wiki_status FROM knowledge_bases WHERE id = ?", (kb_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        return {
+            "kb_id": kb_id,
+            "compile_status": row["compile_status"],
+            "wiki_status": row["wiki_status"],
+        }
+    finally:
+        conn.close()
 
 
 @router.get("/{kb_id}")
 async def get_wiki_overview(kb_id: str):
     """Get structured wiki overview for a knowledge base."""
+    _check_kb_wiki_ready(kb_id)
+
     l0_dir = settings.KB_DIR / kb_id / "l0"
     entities_path = l0_dir / "entities.json"
     timeline_path = l0_dir / "timeline.json"
 
     if not entities_path.exists() and not timeline_path.exists():
         raise HTTPException(status_code=404, detail="No wiki data found")
+
+    # Get wiki_status from DB
+    wiki_status = "pending"
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT wiki_status FROM knowledge_bases WHERE id = ?", (kb_id,)
+        ).fetchone()
+        if row:
+            wiki_status = row["wiki_status"]
+    finally:
+        conn.close()
 
     wiki = {
         "entities": [],
@@ -28,6 +86,7 @@ async def get_wiki_overview(kb_id: str):
         "type_counts": {},
         "confidence_distribution": {"EXTRACTED": 0, "INFERRED": 0, "AMBIGUOUS": 0},
         "top_entities": [],
+        "wiki_status": wiki_status,
     }
 
     if entities_path.exists():
@@ -131,8 +190,19 @@ async def get_wiki_entity(kb_id: str, entity_id: str):
     if timeline_path.exists():
         with open(timeline_path, "r", encoding="utf-8") as f:
             events = json.load(f)
+        # Handle both old (string list) and new (dict list) participant formats
+        def _entity_in_participants(entity_name: str, participants: list) -> bool:
+            for p in participants:
+                if isinstance(p, str):
+                    if p == entity_name:
+                        return True
+                elif isinstance(p, dict):
+                    if p.get("name") == entity_name:
+                        return True
+            return False
+
         result["events"] = [
-            ev for ev in events if entity["name"] in ev.get("participants", [])
+            ev for ev in events if _entity_in_participants(entity["name"], ev.get("participants", []))
         ]
 
     # Find L1 mentions
@@ -145,7 +215,9 @@ async def get_wiki_entity(kb_id: str, entity_id: str):
                 with open(l1_path, "r", encoding="utf-8") as f:
                     summaries = json.load(f)
                     for s in summaries:
-                        if entity["name"] in s.get("entities_mentioned", []):
+                        em = s.get("entities_mentioned", [])
+                        ent_names = [e if isinstance(e, str) else e.get("name", "") for e in em]
+                        if entity["name"] in ent_names:
                             mentions.append({
                                 "doc_id": doc_dir.name,
                                 "chunk_ids": s.get("chunk_ids", []),
@@ -311,24 +383,68 @@ async def get_source_lookup(kb_id: str):
 
 
 @router.post("/{kb_id}/generate")
-async def trigger_wiki_generation(kb_id: str):
-    """Manually trigger wiki generation (for re-generation)."""
-    from app.models.crud import load_model_configs
-    from app.models.router import ModelRouter
-    from app.services.llm.client import LLMClient
-    from app.services.wiki.pipeline import WikiPipeline
+async def trigger_wiki_generation(kb_id: str, mode: str = "lightweight"):
+    """Manually trigger wiki generation (for re-generation).
 
-    db_configs = load_model_configs()
-    if not db_configs:
-        raise HTTPException(status_code=400, detail="No model configuration found")
+    Args:
+        mode: "lightweight" (fast, from L0 data) or "full" (LLM extraction + pages).
+    """
+    # Update status to generating
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE knowledge_bases SET wiki_status = 'generating' WHERE id = ?",
+            (kb_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
-    router_obj = ModelRouter()
-    router_obj.register(db_configs)
-    llm_client = LLMClient(router_obj)
+    try:
+        if mode == "full":
+            from app.models.crud import load_model_configs
+            from app.models.router import ModelRouter
+            from app.services.llm.client import LLMClient
+            from app.services.wiki.pipeline import WikiPipeline
 
-    pipeline = WikiPipeline(llm_client, kb_id)
-    result = await pipeline.run()
-    return result
+            db_configs = load_model_configs()
+            if not db_configs:
+                raise RuntimeError("No model configuration found")
+
+            router_obj = ModelRouter()
+            router_obj.register(db_configs)
+            llm_client = LLMClient(router_obj)
+
+            pipeline = WikiPipeline(llm_client, kb_id)
+            result = await pipeline.run()
+            result_dict = {"status": "completed", "result": str(result)}
+        else:
+            from app.services.wiki.lightweight_generator import generate_wiki_lightweight
+            result_dict = await generate_wiki_lightweight(kb_id)
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE knowledge_bases SET wiki_status = 'completed' WHERE id = ?",
+                (kb_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {"kb_id": kb_id, **result_dict}
+    except Exception as e:
+        logger.error("Wiki generation failed for KB %s: %s", kb_id, e)
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE knowledge_bases SET wiki_status = 'failed' WHERE id = ?",
+                (kb_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        raise HTTPException(status_code=500, detail=f"Wiki generation failed: {e}")
 
 
 @router.get("/{kb_id}/surprises")

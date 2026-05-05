@@ -75,7 +75,7 @@ export function KnowledgeBaseDetail() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent"></div>
+        <div className="animate-spin rounded-full document-detail__spinner"></div>
       </div>
     )
   }
@@ -83,8 +83,8 @@ export function KnowledgeBaseDetail() {
   if (!kbInfo) {
     return (
       <div className="flex flex-col items-center justify-center h-full">
-        <p className="text-stone-500 dark:text-stone-400 mb-4">未找到知识库</p>
-        <button onClick={() => navigate('/knowledge')} className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm">
+        <p className="text-secondary mb-4">未找到知识库</p>
+        <button onClick={() => navigate('/knowledge')} className="document-detail__btn-retry">
           返回列表
         </button>
       </div>
@@ -102,51 +102,57 @@ export function KnowledgeBaseDetail() {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="kb-detail__header">
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigate('/knowledge')}
-            className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-slate-700 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+            className="document-detail__back-btn"
             title="返回知识库列表"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h1 className="text-2xl font-bold text-stone-800 dark:text-stone-100">{kbInfo.name}</h1>
+          <h1 className="kb-detail__title">{kbInfo.name}</h1>
           {kbInfo.compile_status && (
-            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusMap[kbInfo.compile_status]?.color || 'bg-gray-100 text-gray-600'}`}>
+            <span className={`${statusMap[kbInfo.compile_status]?.color || 'badge badge--muted'}`}>
               {statusMap[kbInfo.compile_status]?.label || kbInfo.compile_status}
             </span>
           )}
-          <span className="text-xs text-stone-400 dark:text-stone-500">{kbInfo.document_count} 篇文档</span>
+          <span className="text-xs text-muted">{kbInfo.document_count} 篇文档</span>
         </div>
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 mb-4 border-b border-stone-200 dark:border-slate-700">
+      <div className="kb-detail__tab-bar">
         {tabs.map(tab => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${
-              activeTab === tab.key
-                ? 'border-amber-500 text-amber-700 dark:text-amber-400'
-                : 'border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-300'
-            }`}
+            className={`kb-detail__tab-btn ${activeTab === tab.key ? 'kb-detail__tab-btn--active' : ''}`}
           >
             <tab.Icon className="w-4 h-4" /> <span className="ml-1">{tab.label}</span>
           </button>
         ))}
       </div>
 
-      {/* Tab content */}
+      {/* Tab content — always mounted to preserve WebSocket/streaming state */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {activeTab === 'documents' && <DocumentsTab kbId={kbId!} onRefresh={handleDocRefresh} />}
-        {activeTab === 'compile' && <CompileTab kbId={kbId!} onCompileDone={handleCompileDone} />}
-        {activeTab === 'wiki' && <WikiTab kbId={kbId!} refreshKey={refreshKey} />}
-        {activeTab === 'graph' && <GraphTab kbId={kbId!} refreshKey={refreshKey} />}
-        {activeTab === 'chat' && <ChatTab kbId={kbId!} />}
+        <div style={{ display: activeTab === 'documents' ? 'block' : 'none', height: '100%' }}>
+          <DocumentsTab kbId={kbId!} onRefresh={handleDocRefresh} />
+        </div>
+        <div style={{ display: activeTab === 'compile' ? 'block' : 'none', height: '100%' }}>
+          <CompileTab kbId={kbId!} onCompileDone={handleCompileDone} />
+        </div>
+        <div style={{ display: activeTab === 'wiki' ? 'block' : 'none', height: '100%' }}>
+          <WikiTab kbId={kbId!} refreshKey={refreshKey} />
+        </div>
+        <div style={{ display: activeTab === 'graph' ? 'block' : 'none', height: '100%' }}>
+          <GraphTab kbId={kbId!} refreshKey={refreshKey} />
+        </div>
+        <div style={{ display: activeTab === 'chat' ? 'block' : 'none', height: '100%' }}>
+          <ChatTab kbId={kbId!} />
+        </div>
       </div>
     </div>
   )

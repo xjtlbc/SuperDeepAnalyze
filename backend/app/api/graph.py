@@ -13,9 +13,28 @@ router = APIRouter(prefix="/api/graph", tags=["graph"])
 @router.get("/{kb_id}")
 async def get_graph_data(kb_id: str):
     """Get graph data for force-directed visualization."""
-    entities_path = settings.KB_DIR / kb_id / "l0" / "entities.json"
-    timeline_path = settings.KB_DIR / kb_id / "l0" / "timeline.json"
-    graph_path = settings.KB_DIR / kb_id / "l0" / "event_graph.json"
+    l0_dir = settings.KB_DIR / kb_id / "l0"
+    entities_path = l0_dir / "entities.json"
+    timeline_path = l0_dir / "timeline.json"
+    graph_path = l0_dir / "event_graph.json"
+
+    # Check compilation status first (return 503 instead of 500 when not ready)
+    if not entities_path.exists() and not timeline_path.exists():
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT compile_status FROM knowledge_bases WHERE id = ?", (kb_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Knowledge base not found")
+            if row["compile_status"] != "completed":
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Graph data not available — KB status is '{row['compile_status']}'. Run compilation first."
+                )
+        finally:
+            conn.close()
+        raise HTTPException(status_code=404, detail="No graph data found. Run compilation first.")
 
     nodes = []
     edges = []
@@ -52,20 +71,21 @@ async def get_graph_data(kb_id: str):
     if timeline_path.exists():
         with open(timeline_path, "r", encoding="utf-8") as f:
             events = json.load(f)
-        for ev in events:
+        for i, ev in enumerate(events):
             nodes.append({
-                "id": ev["id"],
-                "label": ev.get("time", "")[:10] + " " + ev.get("description", "")[:30],
+                "id": ev.get("id", f"tlevt_{i:04d}"),
+                "label": ev.get("time", ev.get("date", ""))[:10] + " " + ev.get("description", "")[:30],
                 "type": "event",
                 "color": "#ef4444",
-                "time": ev.get("time", ""),
+                "time": ev.get("time", ev.get("date", "")),
                 "description": ev.get("description", ""),
                 "participants": ev.get("participants", []),
             })
             # Connect events to participant entities
+            ev_id = ev.get("id", f"tlevt_{i:04d}")
             for pid in ev.get("participants", []):
                 edges.append({
-                    "source": ev["id"],
+                    "source": ev_id,
                     "target": pid,
                     "label": "participant",
                 })
@@ -108,7 +128,9 @@ async def get_entity_detail(kb_id: str, entity_id: str):
                 with open(l1_path, "r", encoding="utf-8") as f:
                     summaries = json.load(f)
                     for s in summaries:
-                        if entity["name"] in s.get("entities_mentioned", []):
+                        em = s.get("entities_mentioned", [])
+                        ent_names = [e if isinstance(e, str) else e.get("name", "") for e in em]
+                        if entity["name"] in ent_names:
                             mentions.append({
                                 "doc_id": doc_dir.name,
                                 "chunk_ids": s.get("chunk_ids", []),

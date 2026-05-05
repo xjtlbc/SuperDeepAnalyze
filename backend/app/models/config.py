@@ -15,6 +15,7 @@ class ModelConfig(BaseModel):
     api_key: str = Field(default="", repr=False)
     max_tokens: int = 8192
     dimension: int | None = None
+    provider_type: str = "openai"  # "openai" or "anthropic"
 
     def model_dump_safe(self) -> dict:
         """Dump without api_key for logging/display."""

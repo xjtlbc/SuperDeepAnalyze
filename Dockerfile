@@ -12,9 +12,9 @@ RUN pnpm run build
 # ===== Stage 2: Runtime =====
 FROM python:3.11-slim AS runtime
 
-# Install nginx and supervisor
+# Install nginx, supervisor, and libreoffice-writer for .doc support
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends nginx supervisor && \
+    apt-get install -y --no-install-recommends nginx supervisor libreoffice-writer antiword catdoc && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -47,10 +47,13 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Create data directory skeleton
-RUN mkdir -p /app/data/logs /app/data/faiss /app/data/knowledge_bases
+RUN mkdir -p /app/data/logs /app/data/faiss /app/data/knowledge_bases /app/data/tool_outputs
 
 EXPOSE 80
 VOLUME ["/app/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost/api/knowledge-bases || exit 1
 
 ENV PYTHONUNBUFFERED=1
 ENV TZ=Asia/Shanghai

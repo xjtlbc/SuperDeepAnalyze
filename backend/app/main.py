@@ -18,6 +18,7 @@ from app.api.compile import router as compile_router
 from app.api.graph import router as graph_router
 from app.api.chat import router as chat_router
 from app.api.wiki import router as wiki_router
+from app.api.expand import router as expand_router
 
 logger = get_logger("app.main")
 
@@ -27,10 +28,19 @@ async def lifespan(app: FastAPI):
     setup_logging(log_level=getattr(settings, "log_level", "INFO"))
     logger.info("SuperDeepAnalyze starting up")
     init_db()
+    _auto_configure_models()
     _recover_interrupted_compilations()
     logger.info("Database initialized")
     yield
     logger.info("SuperDeepAnalyze shutting down")
+
+
+def _auto_configure_models():
+    """Auto-configure model settings from environment variables on first run."""
+    from app.models.crud import auto_configure_from_env
+    configured = auto_configure_from_env()
+    if configured:
+        logger.info("Models auto-configured from environment variables")
 
 
 def _recover_interrupted_compilations():
@@ -68,10 +78,15 @@ app.include_router(compile_router)
 app.include_router(graph_router)
 app.include_router(chat_router)
 app.include_router(wiki_router)
+app.include_router(expand_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://localhost:5173", "https://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "https://localhost:5173", "https://127.0.0.1:5173",
+        "http://localhost:8080", "http://127.0.0.1:8080",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -92,7 +107,18 @@ app.add_middleware(Utf8Middleware)
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0"}
+    import shutil
+    return {
+        "status": "ok",
+        "version": "0.2.0",
+        "libreoffice": shutil.which("soffice") is not None,
+        "components": {
+            "parsing": "ok",
+            "compilation": "ok",
+            "agent": "ok",
+            "wiki": "ok",
+        },
+    }
 
 
 @app.exception_handler(Exception)

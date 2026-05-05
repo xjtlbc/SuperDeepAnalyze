@@ -15,7 +15,7 @@ export const WikiPageRenderer: React.FC<WikiPageProps> = ({ content, frontmatter
     return (
       <a
         href="#"
-        className="wikilink text-amber-500 hover:text-amber-400 underline decoration-amber-500/30 hover:decoration-amber-400/50"
+        className="wiki-page__wikilink"
         onClick={(e) => {
           e.preventDefault()
           onWikilinkClick?.(target)
@@ -29,12 +29,12 @@ export const WikiPageRenderer: React.FC<WikiPageProps> = ({ content, frontmatter
   return (
     <div className={`wiki-page ${className || ''}`}>
       {frontmatter && (
-        <div className="wiki-page-header mb-4 pb-4 border-b border-gray-700">
-          <h1 className="text-2xl font-bold text-gray-100">{frontmatter.title}</h1>
+        <div className="wiki-page__header">
+          <h1 className="wiki-page__header-title">{frontmatter.title}</h1>
           {frontmatter.tags && frontmatter.tags.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-2">
+            <div className="wiki-page__tags">
               {frontmatter.tags.map((tag: string, i: number) => (
-                <span key={i} className="px-2 py-0.5 text-xs bg-amber-100/10 dark:bg-amber-900/30 text-amber-600 dark:text-amber-300 rounded-full">
+                <span key={i} className="wiki-page__tag">
                   {tag}
                 </span>
               ))}
@@ -42,7 +42,7 @@ export const WikiPageRenderer: React.FC<WikiPageProps> = ({ content, frontmatter
           )}
         </div>
       )}
-      <div className="wiki-page-content prose prose-sm prose-invert max-w-none">
+      <div className="wiki-page__content">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{

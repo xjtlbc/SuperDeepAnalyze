@@ -297,9 +297,14 @@ async def analyze_intent_with_llm(query: str, llm_client) -> QueryPlan:
 - 识别的实体: {baseline.target_entities}
 - 建议起始层级: {baseline.suggested_start_level}
 
+**重要分类规则**：
+- 如果问题涉及表格/Excel数据（统计、排名、筛选、分组、最多/最少、数量），
+  question_type 必须为 "tabular"，complexity 至少为 "medium"
+- tabular 类型的问题需要使用 search_excel 工具，不能用普通文本搜索
+
 请输出JSON格式(不要输出其他内容):
 {{
-  "question_type": "factual|relational|temporal|analytical|comparative|evidential",
+  "question_type": "factual|relational|temporal|analytical|comparative|evidential|tabular",
   "complexity": "simple|medium|complex",
   "entities": ["实体1", "实体2"],
   "time_range": ["开始时间", "结束时间"],

@@ -274,7 +274,8 @@ async def run_compilation(
                 try:
                     from app.services.parsing.excel_parser import ExcelParser
                     ep = ExcelParser()
-                    chunks = ep.parse_to_chunks(
+                    chunks = await asyncio.to_thread(
+                        ep.parse_to_chunks,
                         original_path, doc_id, kb_id,
                         file_hash=compute_file_hash(original_path) if original_path.exists() else "",
                     )

@@ -114,6 +114,8 @@ class ExcelParser:
         else:
             # Try enriched processor first
             content, metadata = self._try_enriched_parse(path)
+            if content is not None and metadata.get("analysis"):
+                self._save_analysis_json(metadata["analysis"], doc_id, kb_id)
             if content is None:
                 # Fallback to calamine
                 logger.info("Falling back to calamine for %s", path.name)
@@ -160,12 +162,26 @@ class ExcelParser:
             # Attach analysis for downstream L1 consumption via a container class
             analysis_data = metadata.get("analysis")
             if analysis_data is not None:
+                self._save_analysis_json(analysis_data, doc_id, kb_id)
                 chunks = _AnnotatedChunks(chunks, excel_analysis=analysis_data)
             return chunks
 
         # Fallback to calamine chunking
         rows_by_sheet, sheet_names = self._read_excel_sheets(path)
         return self._build_chunks(rows_by_sheet, sheet_names, doc_id, kb_id, file_hash)
+
+    @staticmethod
+    def _save_analysis_json(analysis: dict, doc_id: str, kb_id: str) -> None:
+        """Persist the analysis JSON for Agent tools (search_excel)."""
+        try:
+            from app.config import settings
+            import json
+            doc_dir = settings.KB_DIR / kb_id / "documents" / doc_id
+            doc_dir.mkdir(parents=True, exist_ok=True)
+            with open(doc_dir / "excel_analysis.json", "w", encoding="utf-8") as f:
+                json.dump(analysis, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     # ── Enriched processing ──────────────────────────────────────
 

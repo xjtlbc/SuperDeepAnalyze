@@ -1793,6 +1793,123 @@ def _get_original_filename(doc_dir: Path) -> str:
     return ""
 
 
+class SearchExcelTool(Tool):
+    """Search within an Excel/spreadsheet document by column name matching."""
+
+    name = "search_excel"
+    description = (
+        "搜索 Excel/表格文档中的数据。根据查询关键词匹配列名和样本值，返回相关列的统计信息和样本数据。"
+        "用于了解表格结构、查找特定列、获取数据分布等操作。"
+        "输入: kb_id(知识库ID), doc_id(文档ID), query(自然语言查询)"
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "kb_id": {"type": "string", "description": "知识库ID"},
+            "doc_id": {"type": "string", "description": "Excel文档ID"},
+            "query": {"type": "string", "description": "查询内容，如'查找奖牌列'或'查看表格结构'"},
+        },
+        "required": ["kb_id", "doc_id", "query"],
+    }
+
+    async def execute(self, kb_id: str, doc_id: str, query: str) -> str:
+        import json, re
+        from app.config import settings
+
+        docs_dir = settings.KB_DIR / kb_id / "documents" / doc_id
+        if not docs_dir.exists():
+            return f"文档 {doc_id} 不存在"
+
+        analysis_path = docs_dir / "excel_analysis.json"
+        if not analysis_path.exists():
+            return "该文档不是 Excel 表格或缺少分析数据。可用的列信息: 请确认文档已成功编译。"
+
+        try:
+            analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            return f"无法读取表格分析数据: {e}"
+
+        sheets = analysis.get("sheets", [])
+        if not sheets:
+            return "表格没有有效的 Sheet 数据"
+
+        search_terms = re.findall(r"[\w一-鿿]+", query.lower())
+        results_parts = []
+
+        for sheet in sheets:
+            sheet_name = sheet.get("name", "unknown")
+            columns = sheet.get("columns", [])
+            dims = sheet.get("dimensions", {})
+            distributions = sheet.get("distributions", [])
+            findings = sheet.get("findings", [])
+
+            # Score columns by keyword overlap with name AND sample values
+            col_scores = []
+            for col in columns:
+                name = col.get("name", "").lower()
+                score = sum(len(t) for t in search_terms if t in name)
+                # Also check samples
+                for sv in col.get("sampleValues", [])[:5]:
+                    sv_str = str(sv).lower()
+                    score += sum(len(t) for t in search_terms if t in sv_str) * 0.5
+                if score > 0:
+                    col_scores.append((score, col))
+
+            col_scores.sort(key=lambda x: x[0], reverse=True)
+            matched_cols = col_scores[:5]
+
+            if not matched_cols:
+                # Return all columns if no match (Agent wants to see the structure)
+                results_parts.append(f"## Sheet: {sheet_name} ({dims.get('rows','?')}行 x {dims.get('columns','?')}列)")
+                results_parts.append(f"所有列: {', '.join(c['name'] for c in columns[:20])}")
+                if len(columns) > 20:
+                    results_parts.append(f"  ... 共 {len(columns)} 列")
+            else:
+                results_parts.append(f"## Sheet: {sheet_name} ({dims.get('rows','?')}行 x {dims.get('columns','?')}列)")
+                results_parts.append(f"匹配列: {', '.join(c['name'] for _, c in matched_cols)}")
+
+            # Column details (up to 8 most relevant)
+            show_cols = ([c for _, c in matched_cols] if matched_cols else columns)[:8]
+            for col in show_cols:
+                dtype = col.get("dataType", "?")
+                unique = col.get("uniqueCount", 0)
+                nulls = col.get("nullCount", 0)
+                samples = col.get("sampleValues", [])[:3]
+                parts = [f"  {col['name']}: {dtype}, {unique}个唯一值, {nulls}个空值"]
+                if samples:
+                    parts.append(f"样本: {', '.join(str(s) for s in samples)}")
+                results_parts.append(" | ".join(parts))
+
+            # Key distributions
+            for dist in distributions:
+                col_name = dist.get("column", "")
+                if any(t in col_name.lower() for t in search_terms):
+                    stats = dist.get("stats", {})
+                    if stats.get("topValues"):
+                        top = ", ".join(f"{v.get('value','')}({v.get('count','')})" for v in stats["topValues"][:3])
+                        results_parts.append(f"  {col_name} 热门值: {top}")
+
+            # Data quality findings
+            if findings:
+                results_parts.append(f"\n数据发现: {'; '.join(f.get('description','') for f in findings[:5])}")
+
+        if not results_parts:
+            return "未找到匹配的数据列"
+
+        results_parts.insert(0, f"# 表格查询: {query}\n")
+        results_parts.append(f"\n如需更详细的数据行内容，请使用 read_l2 工具查看原始表格。")
+        return "\n".join(results_parts)
+
+
+def _list_all_columns(sheets: list[dict]) -> str:
+    """List all column names across all sheets."""
+    cols = []
+    for sheet in sheets:
+        for col in sheet.get("columns", []):
+            cols.append(col.get("name", ""))
+    return ", ".join(cols[:50])
+
+
 def register_all_tools(
     registry: "ToolRegistry",
     kb_id: str,
@@ -1833,6 +1950,7 @@ def register_all_tools(
     registry.register(DocGrepTool())
     registry.register(ExpandTool())
     registry.register(WikiBrowseTool())
+    registry.register(SearchExcelTool())
 
     # Recall tools (always available)
     recall_grep = RecallGrepTool(context_manager=context_manager)

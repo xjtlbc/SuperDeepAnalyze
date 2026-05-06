@@ -453,6 +453,10 @@ def _generate_sheet_markdown(ws, df: pd.DataFrame, header_row_idx: int,
     return "\n".join(lines)
 
 
+# Maximum rows to process per sheet (prevents OOM on huge files like athlete_events)
+MAX_ROWS = 5000
+
+
 def process_excel(file_path: str | Path) -> ExcelProcessResult:
     """Process an Excel file producing L2 markdown and analysis JSON.
 
@@ -487,6 +491,18 @@ def process_excel(file_path: str | Path) -> ExcelProcessResult:
         if df_raw.empty:
             continue
 
+        # Truncate oversized sheets to prevent OOM and excessive processing time
+        total_rows = df_raw.shape[0]
+        truncated = False
+        if total_rows > MAX_ROWS:
+            logger.warning(
+                "Sheet '%s' has %d rows, truncating to first %d rows. "
+                "Consider splitting the file for full analysis.",
+                sheet_name, total_rows, MAX_ROWS,
+            )
+            df_raw = df_raw.iloc[:MAX_ROWS]
+            truncated = True
+
         # Detect banner rows early (needed for both markdown and analysis)
         banners = _detect_banner_rows(ws, df_raw)
         banner_indices = {b.row_index for b in banners}
@@ -499,7 +515,14 @@ def process_excel(file_path: str | Path) -> ExcelProcessResult:
         # Generate enriched markdown (with banners if detected)
         md = _generate_sheet_markdown(ws, df_raw, header_row_idx, banners=banners)
         if md:
-            all_sheet_markdown.append(f"# Sheet: {sheet_name}\n\n{md}")
+            header = f"# Sheet: {sheet_name}\n"
+            if truncated:
+                header += (
+                    f"> ⚠️ 该表包含 {total_rows} 行数据，已达到上限，仅处理前 {MAX_ROWS} 行。"
+                    f"如需完整分析，请拆分为多个文件后重新上传。\n"
+                )
+            header += "\n"
+            all_sheet_markdown.append(header + md)
 
         # Analyze sheet (reuses banners already detected)
         try:
@@ -513,6 +536,7 @@ def process_excel(file_path: str | Path) -> ExcelProcessResult:
                 "distributions": analysis.distributions,
                 "findings": analysis.findings,
                 "banners": banners_info,
+                "sampleRows": analysis.sample_rows,
             })
         except Exception as e:
             logger.warning("Failed to analyze sheet '%s': %s", sheet_name, e)

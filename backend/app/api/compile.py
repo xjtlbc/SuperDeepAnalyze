@@ -280,6 +280,14 @@ async def run_compilation(
                     )
                     excel_analysis = getattr(chunks, "excel_analysis", None)
                     logger.info("Excel-specific chunking: %d chunks for %s", len(chunks), doc_name)
+                    # Save analysis JSON for Agent tools
+                    if excel_analysis:
+                        try:
+                            doc_dir = settings.KB_DIR / kb_id / "documents" / doc_id
+                            with open(doc_dir / "excel_analysis.json", "w", encoding="utf-8") as f:
+                                json.dump(excel_analysis, f, ensure_ascii=False, indent=2)
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.warning("Excel chunking failed for %s, falling back to generic: %s", doc_name, e)
                     chunks = chunk_text(content, doc_id=doc_id, kb_id=kb_id)

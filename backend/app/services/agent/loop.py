@@ -246,6 +246,34 @@ class AgentLoop:
         }
         yield {"type": "thinking", "content": f"意图分析完成: {query_plan.question_type.value}, 复杂度={query_plan.complexity.value}"}
 
+        # ── Pre-fetch Excel table data for TABULAR queries ─────────
+        if query_plan.question_type.value == "tabular":
+            try:
+                from app.services.agent.context_manager import _detect_excel_docs
+                excel_docs = _detect_excel_docs(_kb_id)
+                if excel_docs:
+                    from app.services.agent.tools import SearchExcelTool
+                    excel_tool = SearchExcelTool()
+                    yield {"type": "thinking", "content": f"检测到表格查询，正在预加载 {len(excel_docs)} 个表格的结构..."}
+                    for doc_id in excel_docs[:3]:
+                        try:
+                            result = await excel_tool.execute(
+                                kb_id=_kb_id, doc_id=doc_id,
+                                query=user_query,
+                            )
+                            state.messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"[系统预检索] 以下是知识库中表格文档 {doc_id} 的结构和数据概览。"
+                                    f"请基于这些真实数据回答用户问题，不要使用实体提取或关键词搜索来猜测：\n\n{result[:4000]}"
+                                ),
+                            })
+                            yield {"type": "thinking", "content": f"已加载表格 {doc_id} 的结构数据"}
+                        except Exception as e:
+                            logger.warning("Pre-fetch search_excel failed for %s: %s", doc_id, e)
+            except Exception as e:
+                logger.warning("Table pre-fetch failed: %s", e)
+
         # ── Load KB persistent memory ────────────────────────────
         _kb_memory = KBMemory(_kb_id)
         prior_memories = _kb_memory.get_relevant(user_query, limit=5)

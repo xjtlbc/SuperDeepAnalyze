@@ -1835,10 +1835,46 @@ class SearchExcelTool(Tool):
         if not sheets:
             return "表格没有有效的 Sheet 数据"
 
-        search_terms = re.findall(r"[\w一-鿿]+", query.lower())
+        # Chinese→English column name mapping for cross-language matching
+        _CN_EN_COLUMN_MAP = {
+            "国家": ["Team", "NOC", "Country", "Nation", "team", "noc", "country"],
+            "队伍": ["Team", "NOC", "team", "noc"],
+            "金牌": ["Medal", "Gold", "medal", "gold"],
+            "奖牌": ["Medal", "medal"],
+            "银牌": ["Silver", "silver"],
+            "铜牌": ["Bronze", "bronze"],
+            "姓名": ["Name", "name"],
+            "名字": ["Name", "name"],
+            "年龄": ["Age", "age"],
+            "身高": ["Height", "height"],
+            "体重": ["Weight", "weight"],
+            "年份": ["Year", "year"],
+            "季节": ["Season", "season"],
+            "城市": ["City", "city"],
+            "运动": ["Sport", "sport"],
+            "项目": ["Event", "event"],
+            "性别": ["Sex", "sex"],
+            "比赛": ["Games", "Event", "games", "event"],
+            "参赛": ["Games", "Event", "games", "event"],
+        }
+        # Extract terms: CJK n-grams (1-3 chars) + English words
+        q = query.lower()
+        raw_terms = re.findall(r"[a-zA-Z0-9]+", q)
+        # Add CJK n-grams for cross-language matching
+        cjk_chars = re.findall(r"[一-鿿]", q)
+        for n in (2, 3):
+            for i in range(len(cjk_chars) - n + 1):
+                raw_terms.append("".join(cjk_chars[i:i + n]))
+        raw_terms.extend(cjk_chars)  # single chars too
+        # Expand with English equivalents
+        expanded_terms = list(raw_terms)
+        for term in set(raw_terms):  # dedup before expanding
+            if term in _CN_EN_COLUMN_MAP:
+                expanded_terms.extend(_CN_EN_COLUMN_MAP[term])
         # Detect aggregation intent
         agg_keywords = {"统计", "计数", "分组", "汇总", "求和", "平均", "排名", "count", "group", "sum", "avg",
-                        "多少", "几个", "每种", "各个", "分别", "分布", "数量", "占比"}
+                        "多少", "几个", "每种", "各个", "分别", "分布", "数量", "占比", "最多", "最少",
+                        "top", "TOP", "排行", "排序", "降序", "升序"}
         needs_aggregation = any(kw in query.lower() for kw in agg_keywords)
         results_parts = []
 
@@ -1849,13 +1885,14 @@ class SearchExcelTool(Tool):
             distributions = sheet.get("distributions", [])
             findings = sheet.get("findings", [])
 
-            # Score columns by keyword overlap
+            # Score columns by keyword overlap (using expanded terms for cross-language matching)
             col_scores = []
             for i, col in enumerate(columns):
                 name = col.get("name", "").lower()
-                score = sum(len(t) for t in search_terms if t in name)
+                score = sum(len(t) for t in expanded_terms if t.lower() in name)
+                # Also check sample values
                 for sv in col.get("sampleValues", [])[:5]:
-                    score += sum(len(t) for t in search_terms if t in str(sv).lower()) * 0.5
+                    score += sum(len(t) for t in expanded_terms if t.lower() in str(sv).lower()) * 0.5
                 if score > 0:
                     col_scores.append((score, col, i))
 
@@ -1889,8 +1926,14 @@ class SearchExcelTool(Tool):
                         top = ", ".join(f"{v.get('value','')}({v.get('count','')})" for v in stats["topValues"][:5])
                         results_parts.append(f"  {col_name} Top值: {top}")
 
+            # Data quality findings
+            if findings:
+                results_parts.append(f"\n数据发现: {'; '.join(f.get('description','') for f in findings[:5])}")
+
             # ── Load actual L2 data from all chunks for aggregation ──
-            if needs_aggregation and matched_cols and col_names:
+            # Use matched col_names if any, otherwise use first two columns as default
+            col_names_for_agg = col_names if col_names else [c['name'] for c in columns[:2]]
+            if needs_aggregation:
                 try:
                     l2_dir = docs_dir / "l2_chunks"
                     if l2_dir.exists():
@@ -1919,7 +1962,7 @@ class SearchExcelTool(Tool):
                             # Parse header from first chunk only
                             header_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
                             if not col_indices:
-                                for cname in col_names:
+                                for cname in col_names_for_agg:
                                     for hi, h in enumerate(header_cells):
                                         if cname.lower() in h.lower() or h.lower() in cname.lower():
                                             if cname not in col_indices:
@@ -1953,8 +1996,8 @@ class SearchExcelTool(Tool):
                             results_parts.append(f"\n### 实际数据统计 (共{len(all_data_rows)}行)")
 
                             # Aggregation: GROUP BY first matched column, COUNT second col
-                            group_col = col_names[0]
-                            if len(col_names) >= 2:
+                            group_col = col_names_for_agg[0]
+                            if len(col_names_for_agg) >= 2:
                                 groups: dict[str, Counter] = {}
                                 for row in all_data_rows:
                                     gk = row.get(group_col, "(空)")

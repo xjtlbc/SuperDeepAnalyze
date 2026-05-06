@@ -107,6 +107,23 @@ def _generate_node_id(content: str) -> str:
     return f"sum_{digest}"
 
 
+def _detect_excel_docs(kb_id: str) -> list[str]:
+    """Detect Excel/spreadsheet documents in a KB by checking for excel_analysis.json files."""
+    try:
+        from pathlib import Path
+        from app.config import settings
+        docs_dir = settings.KB_DIR / kb_id / "documents"
+        if not docs_dir.exists():
+            return []
+        excel_docs = []
+        for doc_dir in docs_dir.iterdir():
+            if (doc_dir / "excel_analysis.json").exists():
+                excel_docs.append(doc_dir.name)
+        return excel_docs
+    except Exception:
+        return []
+
+
 class ContextManager:
     """Manages conversation context to prevent window overflow using DAG-based compression."""
 
@@ -818,6 +835,7 @@ class ContextManager:
                 # Fully compiled — inject L0 summary
                 try:
                     from app.config import settings
+                    import json
                     entities_path = settings.KB_DIR / kb_id / "l0" / "entities.json"
                     if entities_path.exists():
                         with open(entities_path, "r", encoding="utf-8") as f:
@@ -829,8 +847,19 @@ class ContextManager:
                                 f"知识库已完整编译。已知实体（前30个）: {', '.join(entity_names)}\n"
                                 "可使用 search_keyword, read_l0/l1/l2, expand_entity 等工具高效检索。"
                             )
-                            if len(context_block) > max_chars:
-                                context_block = context_block[:max_chars] + "..."
+
+                    # Detect Excel/table documents and add search_excel guidance
+                    excel_docs = _detect_excel_docs(kb_id)
+                    if excel_docs:
+                        context_block += (
+                            f"\n⚠️ 重要：知识库包含 {len(excel_docs)} 个 Excel/表格文档: {', '.join(excel_docs[:5])}。"
+                            "\n遇到表格相关的统计、排名、筛选、分组问题时，必须优先使用 search_excel 工具！"
+                            "\nsearch_excel 能：查看列结构、按列匹配数据、执行 GROUP BY 聚合统计。"
+                            "\n直接用 search_keyword 文本搜索表格数据是无效的（只能搜到片段表头，无法统计）。"
+                        )
+
+                    if len(context_block) > max_chars:
+                        context_block = context_block[:max_chars] + "..."
                 except Exception:
                     pass
             elif has_l2:
@@ -838,6 +867,12 @@ class ContextManager:
                     "知识库已部分编译（有L2索引但缺少摘要）。\n"
                     "可使用 search_keyword 搜索，用 raw_search 作为补充。"
                 )
+                excel_docs = _detect_excel_docs(kb_id)
+                if excel_docs:
+                    context_block += (
+                        f"\n⚠️ 包含 {len(excel_docs)} 个表格文档: {', '.join(excel_docs[:5])}。"
+                        "\n表格查询必须使用 search_excel 工具，不要用 search_keyword！"
+                    )
             else:
                 context_block = (
                     "知识库尚未编译，无预建索引。\n"

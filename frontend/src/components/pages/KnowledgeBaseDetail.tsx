@@ -136,21 +136,21 @@ export function KnowledgeBaseDetail() {
         ))}
       </div>
 
-      {/* Tab content — always mounted to preserve WebSocket/streaming state */}
-      <div style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', inset: 0, visibility: activeTab === 'documents' ? 'visible' : 'hidden', zIndex: activeTab === 'documents' ? 1 : 0 }}>
+      {/* Tab content — always mounted (display:none preserves React state + DOM) */}
+      <div className="flex-1 min-h-0">
+        <div style={{ display: activeTab === 'documents' ? 'block' : 'none', height: '100%' }}>
           <DocumentsTab kbId={kbId!} onRefresh={handleDocRefresh} />
         </div>
-        <div style={{ position: 'absolute', inset: 0, visibility: activeTab === 'compile' ? 'visible' : 'hidden', zIndex: activeTab === 'compile' ? 1 : 0 }}>
+        <div style={{ display: activeTab === 'compile' ? 'block' : 'none', height: '100%' }}>
           <CompileTab kbId={kbId!} onCompileDone={handleCompileDone} />
         </div>
-        <div style={{ position: 'absolute', inset: 0, visibility: activeTab === 'wiki' ? 'visible' : 'hidden', zIndex: activeTab === 'wiki' ? 1 : 0 }}>
+        <div style={{ display: activeTab === 'wiki' ? 'block' : 'none', height: '100%' }}>
           <WikiTab kbId={kbId!} refreshKey={refreshKey} />
         </div>
-        <div style={{ position: 'absolute', inset: 0, visibility: activeTab === 'graph' ? 'visible' : 'hidden', zIndex: activeTab === 'graph' ? 1 : 0 }}>
+        <div style={{ display: activeTab === 'graph' ? 'block' : 'none', height: '100%' }}>
           <GraphTab kbId={kbId!} refreshKey={refreshKey} />
         </div>
-        <div style={{ position: 'absolute', inset: 0, visibility: activeTab === 'chat' ? 'visible' : 'hidden', zIndex: activeTab === 'chat' ? 1 : 0 }}>
+        <div style={{ display: activeTab === 'chat' ? 'block' : 'none', height: '100%' }}>
           <ChatTab kbId={kbId!} />
         </div>
       </div>

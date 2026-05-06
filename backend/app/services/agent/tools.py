@@ -1807,12 +1807,13 @@ class SearchExcelTool(Tool):
         "properties": {
             "kb_id": {"type": "string", "description": "知识库ID"},
             "doc_id": {"type": "string", "description": "Excel文档ID"},
-            "query": {"type": "string", "description": "查询内容，如'查找奖牌列'或'查看表格结构'"},
+            "query": {"type": "string", "description": "查询内容，如'查看表格结构'或'统计各国奖牌数'"},
+            "operation": {"type": "string", "description": "操作类型: describe(查看结构), aggregate(分组统计), sample(数据样例)", "default": "describe"},
         },
         "required": ["kb_id", "doc_id", "query"],
     }
 
-    async def execute(self, kb_id: str, doc_id: str, query: str) -> str:
+    async def execute(self, kb_id: str, doc_id: str, query: str, operation: str = "describe") -> str:
         import json, re
         from collections import Counter
         from app.config import settings

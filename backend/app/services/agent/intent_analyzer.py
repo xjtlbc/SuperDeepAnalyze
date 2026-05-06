@@ -16,6 +16,12 @@ from app.utils.logging_config import get_logger
 logger = get_logger("app.agent.intent_analyzer")
 
 
+# Table/aggregation keywords that indicate structured data queries
+_TABLE_KEYWORDS = ["表格", "表里", "表中的", "数据表", "Excel", "excel", "统计表"]
+_AGG_KEYWORDS = ["统计", "排名", "最多", "最少", "平均", "占比", "总计", "分组",
+                 "排行", "TOP", "top", "求和", "数量", "多少个", "几种", "各类"]
+
+
 class QuestionType(str, Enum):
     FACTUAL = "factual"          # 事实查询: 谁/什么时候/在哪里
     RELATIONAL = "relational"    # 关系查询: A和B什么关系
@@ -23,6 +29,7 @@ class QuestionType(str, Enum):
     ANALYTICAL = "analytical"    # 分析查询: 为什么/动机/原因
     COMPARATIVE = "comparative"  # 对比查询: A和B的证词矛盾
     EVIDENTIAL = "evidential"    # 证据查询: 有什么证据证明
+    TABULAR = "tabular"          # 表格查询: 涉及表格数据的统计/排名/筛选/聚合
 
 
 class Complexity(str, Enum):
@@ -118,6 +125,11 @@ def _extract_time_range(query: str) -> Optional[tuple[str, str]]:
 
 def _classify_question_type(query: str) -> QuestionType:
     """Classify question type based on Chinese keywords."""
+    # Table queries: any aggregation or table-reference keyword
+    has_table_ref = any(kw in query for kw in _TABLE_KEYWORDS)
+    has_agg = any(kw in query for kw in _AGG_KEYWORDS)
+    if has_table_ref or has_agg:
+        return QuestionType.TABULAR
     if any(kw in query for kw in ["对比", "比较", "矛盾", "不一致", "差异", "不同"]):
         return QuestionType.COMPARATIVE
     if any(kw in query for kw in ["证据", "证明", "证据链", "物证", "书证"]):
@@ -133,7 +145,13 @@ def _classify_question_type(query: str) -> QuestionType:
 
 def _classify_complexity(query: str, question_type: QuestionType) -> Complexity:
     """Assess question complexity."""
-    # Complex indicators
+    # Table queries with aggregation/computation are at least MEDIUM
+    if question_type == QuestionType.TABULAR:
+        has_agg = any(kw in query for kw in _AGG_KEYWORDS)
+        if has_agg:
+            return Complexity.COMPLEX  # Aggregation needs multi-step reasoning
+        return Complexity.MEDIUM  # Even simple table lookups need tool chain
+
     complex_keywords = ["综合", "全面", "所有", "全部", "完整", "深度", "详细分析",
                         "为什么", "动机", "原因", "证据链", "矛盾"]
     medium_keywords = ["关系", "关联", "对比", "经过", "时间线"]
@@ -151,6 +169,8 @@ def _classify_complexity(query: str, question_type: QuestionType) -> Complexity:
 
 def _select_start_level(question_type: QuestionType, complexity: Complexity) -> str:
     """Select the starting retrieval level."""
+    if question_type == QuestionType.TABULAR:
+        return "L1"  # Table queries need L1 summaries + search_excel tool
     if complexity == Complexity.SIMPLE:
         return "L0"
     if question_type == QuestionType.EVIDENTIAL:

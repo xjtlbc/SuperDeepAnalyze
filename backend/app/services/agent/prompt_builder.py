@@ -57,6 +57,10 @@ def build_system_prompt(kb_id: str, query_type: str = "", kb_state=None) -> str:
 ## 可用工具
 ### 核心工具（始终可用）
 - `search_keyword`: 关键词全文搜索（FTS5），支持 L1/L2
+- `search_excel`: **表格数据查询工具**。当问题涉及表格/Excel数据（统计、排名、筛选、
+  分组、计算、查找），必须优先使用此工具。它能：查看表格列结构、按列匹配数据、
+  执行 GROUP BY 聚合统计。典型用法：先用 `search_excel` 了解表格有哪些列，
+  再用聚合功能做统计计算。**重要：表格问题绝不能只用 search_keyword 文本搜索！**
 - `assess_complexity`: 评估问题复杂度
 - `report_findings`: 输出最终分析结论（必须包含 `evidence_refs` 引用）
 - `tool_discover`: 发现并加载高级分析工具（实体追踪、时间线、渐进式搜索等）
@@ -90,6 +94,17 @@ def build_system_prompt(kb_id: str, query_type: str = "", kb_state=None) -> str:
 3. `read_section` → 对特定段落精确阅读
 4. 如果有矛盾，用 `read_l2` 读取原文验证
 5. `report_findings` → 输出综合分析结论
+
+## 表格数据分析工作流（重要！）
+遇到表格/Excel/统计数据类问题（含"统计"、"排名"、"最多"、"最少"、"数量"、"占比"等关键词）时，必须：
+1. `search_excel` → 先了解表格有哪些列、每列的数据类型和分布
+2. 识别问题的目标列 → 如"哪个国家金牌最多"对应 Team(国家) 和 Medal(奖牌)
+3. `search_excel` → 利用其聚合功能做 GROUP BY + COUNT 统计
+4. 根据聚合结果推导答案 → 如"United States 27枚金牌，是最多的"
+5. `report_findings` → 输出答案并引用表格来源
+
+**禁止用 search_keyword 文本搜索回答表格统计问题！表格数据分散在多个chunk中，
+文本搜索只能搜到片段表头，无法做统计计算。**
 
 ## 工具使用优先级
 1. **第一步**: `batch_expand_abstracts` 获取全局文档概览

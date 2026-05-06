@@ -30,6 +30,11 @@ def assess_complexity(query: str) -> QuestionComplexity:
         '关系', '关联', '如何', '为什么', '原因', '经过', '摘要', '概述',
         '过程', '情况', '背景', '影响', '演变', '发展', '联系', '区别'
     ]
+    # Table+aggregation keywords: these require multi-step reasoning (not simple)
+    table_agg_keywords = ['统计', '排名', '最多', '最少', '占比', '分组', '排行']
+    if any(kw in query for kw in table_agg_keywords):
+        return QuestionComplexity.COMPLEX
+
     complex_keywords = [
         '证据', '分析', '责任', '法律', '判决', '犯罪', '案件', '关键', '核心',
         '矛盾', '疑点', '争议', '定性', '定罪', '量刑', '依据', '充分', '链条'

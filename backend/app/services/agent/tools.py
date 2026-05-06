@@ -1814,6 +1814,7 @@ class SearchExcelTool(Tool):
 
     async def execute(self, kb_id: str, doc_id: str, query: str) -> str:
         import json, re
+        from collections import Counter
         from app.config import settings
 
         docs_dir = settings.KB_DIR / kb_id / "documents" / doc_id
@@ -1834,6 +1835,10 @@ class SearchExcelTool(Tool):
             return "表格没有有效的 Sheet 数据"
 
         search_terms = re.findall(r"[\w一-鿿]+", query.lower())
+        # Detect aggregation intent
+        agg_keywords = {"统计", "计数", "分组", "汇总", "求和", "平均", "排名", "count", "group", "sum", "avg",
+                        "多少", "几个", "每种", "各个", "分别", "分布", "数量", "占比"}
+        needs_aggregation = any(kw in query.lower() for kw in agg_keywords)
         results_parts = []
 
         for sheet in sheets:
@@ -1843,34 +1848,28 @@ class SearchExcelTool(Tool):
             distributions = sheet.get("distributions", [])
             findings = sheet.get("findings", [])
 
-            # Score columns by keyword overlap with name AND sample values
+            # Score columns by keyword overlap
             col_scores = []
-            for col in columns:
+            for i, col in enumerate(columns):
                 name = col.get("name", "").lower()
                 score = sum(len(t) for t in search_terms if t in name)
-                # Also check samples
                 for sv in col.get("sampleValues", [])[:5]:
-                    sv_str = str(sv).lower()
-                    score += sum(len(t) for t in search_terms if t in sv_str) * 0.5
+                    score += sum(len(t) for t in search_terms if t in str(sv).lower()) * 0.5
                 if score > 0:
-                    col_scores.append((score, col))
+                    col_scores.append((score, col, i))
 
             col_scores.sort(key=lambda x: x[0], reverse=True)
-            matched_cols = col_scores[:5]
+            matched_cols = [(score, col, idx) for score, col, idx in col_scores[:5]]
+            col_names = [c["name"] for _, c, _ in matched_cols]
 
-            if not matched_cols:
-                # Return all columns if no match (Agent wants to see the structure)
-                results_parts.append(f"## Sheet: {sheet_name} ({dims.get('rows','?')}行 x {dims.get('columns','?')}列)")
-                results_parts.append(f"所有列: {', '.join(c['name'] for c in columns[:20])}")
-                if len(columns) > 20:
-                    results_parts.append(f"  ... 共 {len(columns)} 列")
+            results_parts.append(f"## Sheet: {sheet_name} ({dims.get('rows','?')}行 x {dims.get('columns','?')}列)")
+            if col_names:
+                results_parts.append(f"匹配列: {', '.join(col_names)}")
             else:
-                results_parts.append(f"## Sheet: {sheet_name} ({dims.get('rows','?')}行 x {dims.get('columns','?')}列)")
-                results_parts.append(f"匹配列: {', '.join(c['name'] for _, c in matched_cols)}")
+                results_parts.append(f"所有列: {', '.join(c['name'] for c in columns[:20])}")
 
-            # Column details (up to 8 most relevant)
-            show_cols = ([c for _, c in matched_cols] if matched_cols else columns)[:8]
-            for col in show_cols:
+            # Column details
+            for _, col, _ in (matched_cols or [(0, c, i) for i, c in enumerate(columns)])[:8]:
                 dtype = col.get("dataType", "?")
                 unique = col.get("uniqueCount", 0)
                 nulls = col.get("nullCount", 0)
@@ -1880,14 +1879,112 @@ class SearchExcelTool(Tool):
                     parts.append(f"样本: {', '.join(str(s) for s in samples)}")
                 results_parts.append(" | ".join(parts))
 
-            # Key distributions
+            # Key distributions (top values from analysis)
             for dist in distributions:
                 col_name = dist.get("column", "")
-                if any(t in col_name.lower() for t in search_terms):
+                if col_name in col_names:
                     stats = dist.get("stats", {})
                     if stats.get("topValues"):
-                        top = ", ".join(f"{v.get('value','')}({v.get('count','')})" for v in stats["topValues"][:3])
-                        results_parts.append(f"  {col_name} 热门值: {top}")
+                        top = ", ".join(f"{v.get('value','')}({v.get('count','')})" for v in stats["topValues"][:5])
+                        results_parts.append(f"  {col_name} Top值: {top}")
+
+            # ── Load actual L2 data from all chunks for aggregation ──
+            if needs_aggregation and matched_cols and col_names:
+                try:
+                    l2_dir = docs_dir / "l2_chunks"
+                    if l2_dir.exists():
+                        chunk_files = sorted(l2_dir.glob("*.md"))
+                        all_data_rows = []
+                        col_indices = {}
+                        seen_header = False
+
+                        for cf in chunk_files:
+                            text = cf.read_text(encoding="utf-8")
+                            lines = text.split("\n")
+
+                            # Parse markdown table from this chunk
+                            table_lines = []
+                            in_table = False
+                            for line in lines:
+                                if line.startswith("|"):
+                                    table_lines.append(line)
+                                    in_table = True
+                                elif in_table and not line.strip():
+                                    break
+
+                            if len(table_lines) < 3:
+                                continue
+
+                            # Parse header from first chunk only
+                            header_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
+                            if not col_indices:
+                                for cname in col_names:
+                                    for hi, h in enumerate(header_cells):
+                                        if cname.lower() in h.lower() or h.lower() in cname.lower():
+                                            if cname not in col_indices:
+                                                col_indices[cname] = hi
+
+                            if not col_indices:
+                                continue
+
+                            # Parse data rows (skip header + separator)
+                            start = 2 if not seen_header else 1  # subsequent chunks might repeat header
+                            # Check if first line is actually a header (has similar content to our stored header)
+                            if seen_header:
+                                first_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
+                                if len(first_cells) >= len(header_cells) - 2:
+                                    start = 2  # skip repeated header
+
+                            for line in table_lines[start:]:
+                                cells = [c.strip() for c in line.split("|")[1:-1]]
+                                if len(cells) >= max(col_indices.values()) + 1 if col_indices else 1:
+                                    row = {}
+                                    for cname, idx in col_indices.items():
+                                        if idx < len(cells):
+                                            row[cname] = cells[idx]
+                                    if row:
+                                        all_data_rows.append(row)
+
+                            if not seen_header and len(table_lines) > 3:
+                                seen_header = True
+
+                        if all_data_rows:
+                            results_parts.append(f"\n### 实际数据统计 (共{len(all_data_rows)}行)")
+
+                            # Aggregation: GROUP BY first matched column, COUNT second col
+                            group_col = col_names[0]
+                            if len(col_names) >= 2:
+                                groups: dict[str, Counter] = {}
+                                for row in all_data_rows:
+                                    gk = row.get(group_col, "(空)")
+                                    val = row.get(col_names[1], "")
+                                    if gk not in groups:
+                                        groups[gk] = Counter()
+                                    if val:
+                                        groups[gk][val] += 1
+
+                                ranked = sorted(groups.items(), key=lambda x: sum(x[1].values()), reverse=True)
+                                results_parts.append(f"按 `{group_col}` 分组，统计 `{col_names[1]}` (前15组):")
+                                for gk, counts in ranked[:15]:
+                                    total = sum(counts.values())
+                                    detail = " | ".join(f"{v}:{c}" for v, c in counts.most_common(5))
+                                    results_parts.append(f"  {gk}: {total}条 ({detail})")
+                                if len(ranked) > 15:
+                                    results_parts.append(f"  ... 共 {len(ranked)} 个分组")
+                            else:
+                                counter = Counter(row.get(group_col, "(空)") for row in all_data_rows)
+                                results_parts.append(f"按 `{group_col}` 分组统计:")
+                                for val, count in counter.most_common(20):
+                                    results_parts.append(f"  {val}: {count}")
+                                if len(counter) > 20:
+                                    results_parts.append(f"  ... 共 {len(counter)} 个不同值")
+
+                            # Sample rows
+                            results_parts.append(f"\n数据样例 (前5行):")
+                            for row in all_data_rows[:5]:
+                                results_parts.append("  " + " | ".join(f"{cn}={row.get(cn,'?')}" for cn in col_names[:4]))
+                except Exception:
+                    pass  # graceful fallback if L2 data parsing fails
 
             # Data quality findings
             if findings:
@@ -1897,7 +1994,6 @@ class SearchExcelTool(Tool):
             return "未找到匹配的数据列"
 
         results_parts.insert(0, f"# 表格查询: {query}\n")
-        results_parts.append(f"\n如需更详细的数据行内容，请使用 read_l2 工具查看原始表格。")
         return "\n".join(results_parts)
 
 

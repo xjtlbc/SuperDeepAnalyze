@@ -1,10 +1,41 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { API_BASE } from './shared'
 import { ChatIcon } from '../../Icons'
 import { AgentLoopDisplay } from '../../AgentLoopDisplay'
 import { AskUserBlock } from '../../AgentLoopDisplay/AskUserBlock'
+import ExplorationPanel from '../../AgentLoopDisplay/ExplorationPanel'
+
+// Citation link renderer: converts [doc_xxx] and [doc_xxx L15] patterns to styled badges
+function CitationParagraph({ children }: { children: React.ReactNode }) {
+  const processText = (text: string): React.ReactNode[] => {
+    const parts: React.ReactNode[] = []
+    const regex = /\[(doc_[a-f0-9]+)(?:\s+L(\d+)(?:-L?(\d+))?)?\]/g
+    let lastIdx = 0
+    let match
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIdx) parts.push(text.slice(lastIdx, match.index))
+      const [, docId, lineStart, lineEnd] = match
+      const label = lineStart ? `${docId.slice(0, 10)}… L${lineStart}${lineEnd ? `-L${lineEnd}` : ''}` : `${docId.slice(0, 10)}…`
+      parts.push(
+        <span key={match.index} className="chat-citation" title={docId + (lineStart ? ` L${lineStart}` : '')}>
+          📄 {label}
+        </span>
+      )
+      lastIdx = match.index + match[0].length
+    }
+    if (lastIdx < text.length) parts.push(text.slice(lastIdx))
+    return parts
+  }
+
+  const processed = React.Children.map(children, child => {
+    if (typeof child === 'string') return processText(child)
+    return child
+  })
+
+  return <p className="chat-md-p">{processed}</p>
+}
 import { ConfirmDialog } from '../../ConfirmDialog'
 import type { AgentEvent } from '../../../types/agent'
 
@@ -27,6 +58,10 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [pendingAskUser, setPendingAskUser] = useState<AgentEvent | null>(null)
   const [askUserDisabled, setAskUserDisabled] = useState(false)
+  const [explorationPreserved, setExplorationPreserved] = useState<{ thinking: AgentEvent[]; agent: AgentEvent[] } | null>(null)
+  // Refs to avoid stale closure in WebSocket handler
+  const thinkingRef = useRef<AgentEvent[]>([])
+  const agentRef = useRef<AgentEvent[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -34,6 +69,9 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
   useEffect(() => { if (currentSession) fetchMessages() }, [currentSession])
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streamingContent, thinkingEvents, agentEvents])
   useEffect(() => { return () => { wsRef.current?.close(); wsRef.current = null } }, [])
+  // Keep refs in sync to avoid stale closure in WebSocket handler
+  useEffect(() => { thinkingRef.current = thinkingEvents }, [thinkingEvents])
+  useEffect(() => { agentRef.current = agentEvents }, [agentEvents])
 
   const fetchSessions = async () => {
     try { const res = await fetch(`${API_BASE}/api/sessions/${kbId}`); if (res.ok) { const data = await res.json(); setSessions(Array.isArray(data) ? data : []) } } catch (e) { console.error('Failed to fetch sessions:', e) }
@@ -59,7 +97,7 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
   }
 
   const sendWithWs = async (sessionId: string, content: string, isNewSession: boolean = false) => {
-    setSending(true); setStreamingContent(''); setThinkingEvents([]); setAgentEvents([]); setWsStatus('idle')
+    setSending(true); setStreamingContent(''); setThinkingEvents([]); setAgentEvents([]); setExplorationPreserved(null); setWsStatus('idle')
 
     const userMsgId = `umsg_${Date.now()}`
     const userMsg: ChatMessage = { id: userMsgId, role: 'user' as const, content }
@@ -142,7 +180,13 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
               break
             case 'final_answer':
               finalReceived = true; clearIdleTimer()
-              setStreamingContent(''); setThinkingEvents([]); setAgentEvents([])
+              // Preserve exploration data before clearing (use refs to avoid stale closure)
+              const currentThinking = thinkingRef.current
+              const currentAgent = agentRef.current
+              if (currentThinking.length > 0 || currentAgent.length > 0) {
+                setExplorationPreserved({ thinking: [...currentThinking], agent: [...currentAgent] })
+              }
+              setThinkingEvents([]); setAgentEvents([])
               setWsStatus('idle'); setSending(false)
               ws.close()
               fetch(`${API_BASE}/api/sessions/${sessionId}/messages`).then(r => r.json()).then(data => {
@@ -164,8 +208,8 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
         } catch (e) { console.error('Failed to parse WS message:', e) }
       }
 
-      ws.onclose = () => { clearIdleTimer(); if (!finalReceived) { setWsStatus('disconnected'); startHttpPoll(sessionId) } }
-      ws.onerror = () => { clearIdleTimer(); if (!finalReceived) { setWsStatus('disconnected') } }
+      ws.onclose = () => { clearIdleTimer(); if (!finalReceived) { startHttpPoll(sessionId) } }
+      ws.onerror = () => { clearIdleTimer(); if (!finalReceived) { startHttpPoll(sessionId) } }
     } catch (e) { setWsStatus('disconnected'); setSending(false) }
   }
 
@@ -270,7 +314,7 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
                     <div className={`chat-message-bubble ${msg.role === 'user' ? 'chat-message-bubble--user' : 'chat-message-bubble--assistant'}`}>
                       {msg.role === 'assistant' ? (
                         <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                          p: ({ children }) => <p className="chat-md-p">{children}</p>,
+                          p: ({ children }) => <CitationParagraph>{children}</CitationParagraph>,
                           a: ({ href, children }) => <a href={href} className="chat-md-link" target="_blank" rel="noopener noreferrer">{children}</a>,
                           code: ({ children }) => <code className="chat-md-inline-code">{children}</code>,
                           pre: ({ children }) => <pre className="chat-md-pre">{children}</pre>,
@@ -282,6 +326,17 @@ function EmbeddedChatView({ kbId }: { kbId: string }) {
                   </div>
                 </div>
               ))}
+
+              {/* Exploration panel for the completed answer */}
+              {explorationPreserved && (explorationPreserved.thinking.length > 0 || explorationPreserved.agent.length > 0) && (
+                <div className="chat-message-row chat-message-row--assistant">
+                  <ExplorationPanel
+                    thinkingEvents={explorationPreserved.thinking}
+                    agentEvents={explorationPreserved.agent}
+                    onClear={() => setExplorationPreserved(null)}
+                  />
+                </div>
+              )}
 
               {/* Agent thinking / streaming area */}
               {(thinkingEvents.length > 0 || agentEvents.length > 0 || streamingContent) && (

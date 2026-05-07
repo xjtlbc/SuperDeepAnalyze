@@ -209,6 +209,24 @@ class SearchKeywordTool(Tool):
             raw_score = r.get("score", 0)
             r["relevance_score"] = normalize_relevance("L1", raw_score)
         add_confidence_to_results(deduped, source="keyword")
+
+        # Fallback: if FTS5 returns nothing, try grep_docs on raw documents
+        if not deduped and kb_id:
+            try:
+                grep_tool = GrepDocsTool()
+                grep_result = await grep_tool.execute(
+                    kb_id=kb_id, pattern=query,
+                    output_mode="content", max_results=top_k,
+                    context_lines=2,
+                )
+                return json.dumps({
+                    "source": "grep_docs_fallback",
+                    "message": "FTS5未找到结果，以下为原始文档grep搜索结果",
+                    "grep_results": grep_result[:3000],
+                }, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
         return json.dumps(deduped[:top_k], ensure_ascii=False, indent=2)
 
 
@@ -1383,6 +1401,204 @@ class DocGrepTool(Tool):
         return matches
 
 
+class GrepDocsTool(Tool):
+    """Search across ALL parsed documents in a KB using regex. No pre-indexing needed."""
+
+    name = "grep_docs"
+    description = (
+        "在知识库的所有原始文档中执行正则搜索。无需预编译索引。"
+        "用于查找关键词、人名、地名、日期、案件编号等文本模式。"
+        "先使用 files_with_matches 模式了解哪些文档包含匹配项，再用 content 模式查看详情。"
+        "输入: kb_id(知识库ID), pattern(正则表达式), doc_id(可选,限定文档), "
+        "output_mode(content|files_with_matches, 默认files_with_matches), "
+        "max_results(默认20), offset(分页偏移), context_lines(上下文行数, 默认1)"
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "kb_id": {"type": "string", "description": "知识库ID"},
+            "pattern": {"type": "string", "description": "搜索正则表达式，如'李某|被告人|被害人'或'伤情|鉴定|骨折'"},
+            "doc_id": {"type": "string", "description": "可选，限定搜索的文档ID"},
+            "output_mode": {"type": "string", "description": "content(返回匹配行+上下文) 或 files_with_matches(仅返回文件名), 默认files_with_matches"},
+            "max_results": {"type": "integer", "description": "最大返回条数，默认20"},
+            "offset": {"type": "integer", "description": "分页偏移，默认0"},
+            "context_lines": {"type": "integer", "description": "每条匹配的上下文行数，默认1"},
+        },
+        "required": ["kb_id", "pattern"],
+    }
+    is_readonly = True
+
+    async def execute(self, kb_id: str, pattern: str, doc_id: str = "",
+                       output_mode: str = "files_with_matches", max_results: int = 20,
+                       offset: int = 0, context_lines: int = 1) -> str:
+        import re as _re
+        from app.config import settings
+
+        docs_dir = settings.KB_DIR / kb_id / "documents"
+        if not docs_dir.exists():
+            return "知识库文档目录不存在"
+
+        try:
+            regex = _re.compile(pattern, _re.IGNORECASE)
+        except _re.error as e:
+            return f"正则表达式无效: {e}"
+
+        # Determine which document directories to search
+        if doc_id:
+            target_dirs = [docs_dir / doc_id]
+        else:
+            target_dirs = sorted(docs_dir.iterdir())
+
+        all_matches: list[dict] = []  # {doc_id, line_num, content, context_before, context_after}
+        files_with_hits: list[str] = []
+
+        for doc_dir in target_dirs:
+            if not doc_dir.is_dir():
+                continue
+            parsed = doc_dir / "parsed.md"
+            if not parsed.exists():
+                continue
+
+            lines = parsed.read_text(encoding="utf-8", errors="replace").split("\n")
+            for i, line in enumerate(lines):
+                if regex.search(line):
+                    files_with_hits.append(doc_dir.name)
+                    if output_mode == "content":
+                        ctx_start = max(0, i - context_lines)
+                        ctx_end = min(len(lines), i + context_lines + 1)
+                        all_matches.append({
+                            "doc_id": doc_dir.name,
+                            "line_num": i + 1,  # 1-based
+                            "line": line[:300],
+                            "context": "\n".join(f"  L{c+1}: {lc[:200]}"
+                                                 for c, lc in enumerate(lines[ctx_start:ctx_end], ctx_start)),
+                        })
+
+        if output_mode == "files_with_matches":
+            if not files_with_hits:
+                return f"未找到匹配 '{pattern}' 的文档"
+            total = len(files_with_hits)
+            page = files_with_hits[offset:offset + max_results]
+            lines = [f"匹配 '{pattern}' 的文档 ({total} 个):"]
+            for f in page:
+                lines.append(f"  - {f}")
+            if offset + max_results < total:
+                lines.append(f"  ... 还有 {total - offset - max_results} 个, 使用 offset={offset + max_results} 翻页")
+            return "\n".join(lines)
+
+        # Content mode
+        if not all_matches:
+            return f"未找到匹配 '{pattern}' 的内容"
+        total = len(all_matches)
+        page = all_matches[offset:offset + max_results]
+        lines = [f"搜索 '{pattern}' 的结果 ({total} 条匹配):"]
+        for m in page:
+            lines.append(f"\n### {m['doc_id']} 第{m['line_num']}行:")
+            lines.append(f"> {m['line']}")
+            lines.append(f"上下文:\n{m['context']}")
+        if offset + max_results < total:
+            lines.append(f"\n... 还有 {total - offset - max_results} 条, 使用 offset={offset + max_results} 翻页")
+        return "\n".join(lines)
+
+
+class ReadDocTool(Tool):
+    """Read specific line ranges of a parsed document. No pre-indexing needed."""
+
+    name = "read_doc"
+    description = (
+        "分页读取指定文档的原始文本内容。配合 grep_docs 使用：先用 grep 定位行号，再用本工具读取上下文。"
+        "输入: kb_id(知识库ID), doc_id(文档ID), start_line(起始行, 默认1), line_count(行数, 默认200, 最大500)"
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "kb_id": {"type": "string", "description": "知识库ID"},
+            "doc_id": {"type": "string", "description": "文档ID"},
+            "start_line": {"type": "integer", "description": "起始行号(1-based), 默认1"},
+            "line_count": {"type": "integer", "description": "读取行数, 默认200, 最大500"},
+        },
+        "required": ["kb_id", "doc_id"],
+    }
+    is_readonly = True
+
+    async def execute(self, kb_id: str, doc_id: str, start_line: int = 1,
+                       line_count: int = 200) -> str:
+        from app.config import settings
+
+        parsed = settings.KB_DIR / kb_id / "documents" / doc_id / "parsed.md"
+        if not parsed.exists():
+            return f"文档 {doc_id} 的解析文件不存在"
+
+        lines = parsed.read_text(encoding="utf-8", errors="replace").split("\n")
+        total = len(lines)
+        line_count = min(line_count, 500)
+        start_line = max(1, start_line)
+        end_line = min(start_line + line_count, total)
+
+        result_lines = [
+            f"# {doc_id} (共 {total} 行, 显示 L{start_line}-L{end_line})\n"
+        ]
+        for i in range(start_line - 1, end_line):
+            result_lines.append(f"L{i + 1}: {lines[i]}")
+
+        if end_line < total:
+            result_lines.append(f"\n... 还有 {total - end_line} 行, 使用 start_line={end_line + 1} 继续读取")
+        return "\n".join(result_lines)
+
+
+class ListDocsTool(Tool):
+    """List all documents in a KB with basic metadata."""
+
+    name = "list_docs"
+    description = (
+        "列出知识库中的所有文档，包括文件名、大小、行数。用于了解知识库中有哪些文档可用。"
+        "输入: kb_id(知识库ID)"
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "kb_id": {"type": "string", "description": "知识库ID"},
+        },
+        "required": ["kb_id"],
+    }
+    is_readonly = True
+
+    async def execute(self, kb_id: str) -> str:
+        from app.config import settings
+
+        docs_dir = settings.KB_DIR / kb_id / "documents"
+        if not docs_dir.exists():
+            return "知识库文档目录不存在"
+
+        doc_list = []
+        for doc_dir in sorted(docs_dir.iterdir()):
+            if not doc_dir.is_dir():
+                continue
+            info = {"doc_id": doc_dir.name, "filename": "", "size_mb": 0, "lines": 0, "has_parsed": False}
+            # Find original file
+            parsed = doc_dir / "parsed.md"
+            if parsed.exists():
+                info["has_parsed"] = True
+                info["size_mb"] = round(parsed.stat().st_size / 1024, 1)
+                info["lines"] = sum(1 for _ in open(parsed, encoding="utf-8", errors="replace"))
+            # Find original filename
+            for f in doc_dir.iterdir():
+                if f.suffix.lower() in (".pdf", ".docx", ".txt", ".xlsx", ".md", ".csv", ".doc"):
+                    info["filename"] = f.name
+                    break
+            doc_list.append(info)
+
+        if not doc_list:
+            return "知识库中没有文档"
+
+        lines = [f"知识库 {kb_id} 文档列表 ({len(doc_list)} 个):\n"]
+        for d in doc_list:
+            fname = d["filename"] or d["doc_id"]
+            status = f'{d["lines"]}行' if d["has_parsed"] else "未解析"
+            lines.append(f"  {d['doc_id']} — {fname} ({d['size_mb']}KB, {status})")
+        return "\n".join(lines)
+
+
 class ExpandTool(Tool):
     """Expand document from summary to detail levels."""
     name = "expand"
@@ -1793,6 +2009,264 @@ def _get_original_filename(doc_dir: Path) -> str:
     return ""
 
 
+def _match_db_column(column_name: str, db_columns: list[str]) -> str | None:
+    """Find the best matching DB column name for a given analysis column name.
+
+    Column names in data.db are sanitized (non-alphanumeric chars replaced with _).
+    This function finds the best match by comparing lowercase, stripped names.
+    """
+    cn_lower = column_name.lower().strip()
+    for dbc in db_columns:
+        if dbc.lower() == cn_lower:
+            return dbc
+    for dbc in db_columns:
+        if dbc.lower() in cn_lower or cn_lower in dbc.lower():
+            return dbc
+    return None
+
+
+def _aggregate_via_sqlite(
+    db_path: str,
+    sheet_name: str,
+    group_col: str | None,
+    value_col: str | None,
+    filter_value: str | None,
+    columns: list[dict],
+    top_n: int = 15,
+) -> str | None:
+    """Execute safe aggregation SQL against the SQLite database.
+
+    Returns formatted results string or None if query fails.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        # Get actual DB columns
+        cursor = conn.execute(f'SELECT * FROM "{sheet_name}" LIMIT 0')
+        db_columns = [d[0] for d in cursor.description]
+
+        # Map logical column names to actual DB column names
+        db_group_col = _match_db_column(group_col, db_columns) if group_col else None
+        db_value_col = _match_db_column(value_col, db_columns) if value_col else None
+
+        # Get total row count
+        total_rows = conn.execute(f'SELECT COUNT(*) FROM "{sheet_name}"').fetchone()[0]
+        parts = [f"\n### 实际数据统计 (共{total_rows}行，全量)"]
+
+        if db_group_col:
+            if db_value_col and filter_value:
+                # GROUP BY with filter: SELECT group, COUNT(*) WHERE value = filter
+                sql = (
+                    f'SELECT "{db_group_col}", COUNT(*) AS cnt '
+                    f'FROM "{sheet_name}" '
+                    f'WHERE "{db_value_col}" = ? '
+                    f'GROUP BY "{db_group_col}" '
+                    f'ORDER BY cnt DESC '
+                    f'LIMIT ?'
+                )
+                rows = conn.execute(sql, (filter_value, top_n)).fetchall()
+                parts.append(
+                    f"按 `{group_col}` 分组，筛选 `{value_col}` = `{filter_value}` (前{top_n}组):"
+                )
+                for gk, cnt in rows:
+                    parts.append(f"  {gk}: {filter_value}={cnt}")
+                # Count total matching rows
+                total_matching = conn.execute(
+                    f'SELECT COUNT(DISTINCT "{db_group_col}") FROM "{sheet_name}" WHERE "{db_value_col}" = ?',
+                    (filter_value,)
+                ).fetchone()[0]
+                if total_matching > top_n:
+                    parts.append(f"  ... 共 {total_matching} 个分组")
+
+            elif db_value_col:
+                # GROUP BY + value breakdown
+                sql = (
+                    f'SELECT "{db_group_col}", "{db_value_col}", COUNT(*) AS cnt '
+                    f'FROM "{sheet_name}" '
+                    f'WHERE "{db_value_col}" IS NOT NULL AND "{db_value_col}" != \'\' '
+                    f'GROUP BY "{db_group_col}", "{db_value_col}" '
+                    f'ORDER BY cnt DESC '
+                    f'LIMIT ?'
+                )
+                rows = conn.execute(sql, (top_n * 5,)).fetchall()
+                from collections import Counter
+                groups: dict[str, Counter] = {}
+                for gk, val, cnt in rows:
+                    if gk not in groups:
+                        groups[gk] = Counter()
+                    groups[gk][val] += cnt
+                ranked = sorted(groups.items(), key=lambda x: sum(x[1].values()), reverse=True)
+                parts.append(f"按 `{group_col}` 分组，统计 `{value_col}` (前{top_n}组):")
+                for gk, counts in ranked[:top_n]:
+                    total = sum(counts.values())
+                    detail = " | ".join(f"{v}:{c}" for v, c in counts.most_common(5))
+                    parts.append(f"  {gk}: {total}条 ({detail})")
+                if len(ranked) > top_n:
+                    parts.append(f"  ... 共 {len(ranked)} 个分组")
+
+            else:
+                # GROUP BY only, COUNT(*)
+                sql = (
+                    f'SELECT "{db_group_col}", COUNT(*) AS cnt '
+                    f'FROM "{sheet_name}" '
+                    f'GROUP BY "{db_group_col}" '
+                    f'ORDER BY cnt DESC '
+                    f'LIMIT ?'
+                )
+                rows = conn.execute(sql, (top_n,)).fetchall()
+                parts.append(f"按 `{group_col}` 分组统计:")
+                for gk, cnt in rows:
+                    parts.append(f"  {gk}: {cnt}")
+                total_groups = conn.execute(
+                    f'SELECT COUNT(DISTINCT "{db_group_col}") FROM "{sheet_name}"'
+                ).fetchone()[0]
+                if total_groups > top_n:
+                    parts.append(f"  ... 共 {total_groups} 个不同值")
+
+            # Sample rows
+            parts.append(f"\n数据样例 (前5行):")
+            sample_cols = [group_col, value_col] if value_col else [group_col]
+            sample_cols = [c for c in sample_cols if c] + [db_columns[-1]]
+            db_sample_cols = [_match_db_column(c, db_columns) for c in sample_cols]
+            db_sample_cols = [c for c in db_sample_cols if c]
+            sample_sql_cols = ", ".join(f'"{c}"' for c in db_sample_cols[:4])
+            sample_rows = conn.execute(
+                f'SELECT {sample_sql_cols} FROM "{sheet_name}" LIMIT 5'
+            ).fetchall()
+            for row in sample_rows:
+                parts.append("  " + " | ".join(
+                    f"{db_sample_cols[i]}={row[i]}" for i in range(len(row))
+                ))
+
+        conn.close()
+        return "\n".join(parts)
+    except Exception:
+        conn.close()
+        return None
+
+
+def _fallback_l2_aggregation(
+    docs_dir,
+    sheet_name: str,
+    col_names_for_agg: list[str],
+    group_col: str | None,
+    value_col: str | None,
+    filter_value: str | None,
+    columns: list[dict],
+    expanded_terms: list[str],
+    results_parts: list[str],
+) -> None:
+    """Fallback aggregation by parsing L2 markdown chunks (backward compatible)."""
+    import json
+    from collections import Counter
+
+    l2_dir = docs_dir / "l2_chunks"
+    if not l2_dir.exists():
+        return
+
+    chunk_files = sorted(l2_dir.glob("*.md"))
+    all_data_rows = []
+    col_indices = {}
+    seen_header = False
+
+    for cf in chunk_files:
+        text = cf.read_text(encoding="utf-8")
+        lines = text.split("\n")
+        table_lines = []
+        in_table = False
+        for line in lines:
+            if line.startswith("|"):
+                table_lines.append(line)
+                in_table = True
+            elif in_table and not line.strip():
+                break
+        if len(table_lines) < 3:
+            continue
+
+        header_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
+        if not col_indices:
+            for cname in col_names_for_agg:
+                for hi, h in enumerate(header_cells):
+                    if cname.lower() in h.lower() or h.lower() in cname.lower():
+                        if cname not in col_indices:
+                            col_indices[cname] = hi
+        if not col_indices:
+            continue
+
+        start = 2 if not seen_header else 1
+        if seen_header:
+            first_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
+            if len(first_cells) >= len(header_cells) - 2:
+                start = 2
+
+        for line in table_lines[start:]:
+            cells = [c.strip() for c in line.split("|")[1:-1]]
+            if len(cells) >= max(col_indices.values()) + 1 if col_indices else 1:
+                row = {}
+                for cname, idx in col_indices.items():
+                    if idx < len(cells):
+                        row[cname] = cells[idx]
+                if row:
+                    all_data_rows.append(row)
+
+        if not seen_header and len(table_lines) > 3:
+            seen_header = True
+
+    if not all_data_rows:
+        return
+
+    results_parts.append(
+        f"\n### 实际数据统计 (共{len(all_data_rows)}行，仅基于L2文本块)"
+    )
+
+    if group_col is None:
+        group_col = col_names_for_agg[0] if col_names_for_agg else None
+
+    if value_col:
+        groups: dict[str, Counter] = {}
+        for row in all_data_rows:
+            gk = row.get(group_col, "(空)")
+            val = row.get(value_col, "")
+            if gk not in groups:
+                groups[gk] = Counter()
+            if val:
+                groups[gk][val] += 1
+
+        if filter_value:
+            ranked = sorted(groups.items(), key=lambda x: x[1].get(filter_value, 0), reverse=True)
+            results_parts.append(
+                f"按 `{group_col}` 分组，筛选 `{value_col}` = `{filter_value}` (前15组):"
+            )
+            for gk, counts in ranked[:15]:
+                matched = counts.get(filter_value, 0)
+                if matched > 0:
+                    results_parts.append(f"  {gk}: {filter_value}={matched}")
+            if len(ranked) > 15:
+                results_parts.append(f"  ... 共 {len(ranked)} 个分组")
+        else:
+            ranked = sorted(groups.items(), key=lambda x: sum(x[1].values()), reverse=True)
+            results_parts.append(f"按 `{group_col}` 分组，统计 `{value_col}` (前15组):")
+            for gk, counts in ranked[:15]:
+                total = sum(counts.values())
+                detail = " | ".join(f"{v}:{c}" for v, c in counts.most_common(5))
+                results_parts.append(f"  {gk}: {total}条 ({detail})")
+            if len(ranked) > 15:
+                results_parts.append(f"  ... 共 {len(ranked)} 个分组")
+    else:
+        counter = Counter(row.get(group_col, "(空)") for row in all_data_rows)
+        results_parts.append(f"按 `{group_col}` 分组统计:")
+        for val, count in counter.most_common(20):
+            results_parts.append(f"  {val}: {count}")
+        if len(counter) > 20:
+            results_parts.append(f"  ... 共 {len(counter)} 个不同值")
+
+    # Sample rows
+    results_parts.append(f"\n数据样例 (前5行):")
+    for row in all_data_rows[:5]:
+        results_parts.append("  " + " | ".join(f"{cn}={row.get(cn,'?')}" for cn in col_names_for_agg[:4]))
+
+
 class SearchExcelTool(Tool):
     """Search within an Excel/spreadsheet document by column name matching."""
 
@@ -1930,105 +2404,90 @@ class SearchExcelTool(Tool):
             if findings:
                 results_parts.append(f"\n数据发现: {'; '.join(f.get('description','') for f in findings[:5])}")
 
-            # ── Load actual L2 data from all chunks for aggregation ──
-            # Use matched col_names if any, otherwise use first two columns as default
+            # ── Smart column classification for aggregation ──
+            # Classify matched columns as dimension (high cardinality: GROUP BY)
+            # or metric (low cardinality: FILTER / VALUE). This prevents using
+            # low-cardinality columns like "Medal" (3 values) as the GROUP BY key.
             col_names_for_agg = col_names if col_names else [c['name'] for c in columns[:2]]
+            if needs_aggregation and matched_cols:
+                col_unique_map = {c['name']: c.get('uniqueCount', 0) for c in columns}
+                # Separate matched columns into dimensions (many unique values) and metrics (few)
+                dim_cols = []   # e.g. Team(231), NOC(173) → GROUP BY candidates
+                metric_cols = []  # e.g. Medal(3), Sex(2) → filter/value candidates
+                for _, col, _ in matched_cols:
+                    if col_unique_map.get(col['name'], 0) > 20:
+                        dim_cols.append(col['name'])
+                    else:
+                        metric_cols.append(col['name'])
+                # Prefer dimension columns first for aggregation
+                col_names_for_agg = dim_cols + metric_cols
+                if not col_names_for_agg:
+                    col_names_for_agg = col_names
+                # Save for smart group/value column selection later
+                _dim_cols = dim_cols
+                _metric_cols = metric_cols
+            else:
+                _dim_cols = []
+                _metric_cols = []
+
             if needs_aggregation:
-                try:
-                    l2_dir = docs_dir / "l2_chunks"
-                    if l2_dir.exists():
-                        chunk_files = sorted(l2_dir.glob("*.md"))
-                        all_data_rows = []
-                        col_indices = {}
-                        seen_header = False
+                # Smart aggregation: dimension col for GROUP BY, metric col for filter
+                group_col = _dim_cols[0] if _dim_cols else (
+                    col_names_for_agg[0] if col_names_for_agg else None
+                )
+                value_col = _metric_cols[0] if _metric_cols else (
+                    col_names_for_agg[1] if len(col_names_for_agg) >= 2 else None
+                )
 
-                        for cf in chunk_files:
-                            text = cf.read_text(encoding="utf-8")
-                            lines = text.split("\n")
-
-                            # Parse markdown table from this chunk
-                            table_lines = []
-                            in_table = False
-                            for line in lines:
-                                if line.startswith("|"):
-                                    table_lines.append(line)
-                                    in_table = True
-                                elif in_table and not line.strip():
+                # Detect target filter value from query (e.g. "金牌" → "Gold")
+                filter_value = None
+                if value_col:
+                    for col in columns:
+                        if col['name'] == value_col:
+                            samples = [str(s) for s in col.get('sampleValues', [])]
+                            for term in expanded_terms:
+                                for sv in samples:
+                                    if term.lower() in sv.lower():
+                                        filter_value = sv
+                                        break
+                                if filter_value:
                                     break
+                            break
 
-                            if len(table_lines) < 3:
-                                continue
+                # ── SQLite-first aggregation ──────────────────────
+                db_path = docs_dir / "data.db"
+                sqlite_ok = False
+                if db_path.exists():
+                    try:
+                        import sqlite3
+                        agg_result = _aggregate_via_sqlite(
+                            db_path=str(db_path),
+                            sheet_name=sheet_name,
+                            group_col=group_col,
+                            value_col=value_col,
+                            filter_value=filter_value,
+                            columns=columns,
+                            top_n=15,
+                        )
+                        if agg_result:
+                            results_parts.append(agg_result)
+                            sqlite_ok = True
+                    except Exception:
+                        pass
 
-                            # Parse header from first chunk only
-                            header_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
-                            if not col_indices:
-                                for cname in col_names_for_agg:
-                                    for hi, h in enumerate(header_cells):
-                                        if cname.lower() in h.lower() or h.lower() in cname.lower():
-                                            if cname not in col_indices:
-                                                col_indices[cname] = hi
-
-                            if not col_indices:
-                                continue
-
-                            # Parse data rows (skip header + separator)
-                            start = 2 if not seen_header else 1  # subsequent chunks might repeat header
-                            # Check if first line is actually a header (has similar content to our stored header)
-                            if seen_header:
-                                first_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
-                                if len(first_cells) >= len(header_cells) - 2:
-                                    start = 2  # skip repeated header
-
-                            for line in table_lines[start:]:
-                                cells = [c.strip() for c in line.split("|")[1:-1]]
-                                if len(cells) >= max(col_indices.values()) + 1 if col_indices else 1:
-                                    row = {}
-                                    for cname, idx in col_indices.items():
-                                        if idx < len(cells):
-                                            row[cname] = cells[idx]
-                                    if row:
-                                        all_data_rows.append(row)
-
-                            if not seen_header and len(table_lines) > 3:
-                                seen_header = True
-
-                        if all_data_rows:
-                            results_parts.append(f"\n### 实际数据统计 (共{len(all_data_rows)}行)")
-
-                            # Aggregation: GROUP BY first matched column, COUNT second col
-                            group_col = col_names_for_agg[0]
-                            if len(col_names_for_agg) >= 2:
-                                groups: dict[str, Counter] = {}
-                                for row in all_data_rows:
-                                    gk = row.get(group_col, "(空)")
-                                    val = row.get(col_names[1], "")
-                                    if gk not in groups:
-                                        groups[gk] = Counter()
-                                    if val:
-                                        groups[gk][val] += 1
-
-                                ranked = sorted(groups.items(), key=lambda x: sum(x[1].values()), reverse=True)
-                                results_parts.append(f"按 `{group_col}` 分组，统计 `{col_names[1]}` (前15组):")
-                                for gk, counts in ranked[:15]:
-                                    total = sum(counts.values())
-                                    detail = " | ".join(f"{v}:{c}" for v, c in counts.most_common(5))
-                                    results_parts.append(f"  {gk}: {total}条 ({detail})")
-                                if len(ranked) > 15:
-                                    results_parts.append(f"  ... 共 {len(ranked)} 个分组")
-                            else:
-                                counter = Counter(row.get(group_col, "(空)") for row in all_data_rows)
-                                results_parts.append(f"按 `{group_col}` 分组统计:")
-                                for val, count in counter.most_common(20):
-                                    results_parts.append(f"  {val}: {count}")
-                                if len(counter) > 20:
-                                    results_parts.append(f"  ... 共 {len(counter)} 个不同值")
-
-                            # Sample rows
-                            results_parts.append(f"\n数据样例 (前5行):")
-                            for row in all_data_rows[:5]:
-                                results_parts.append("  " + " | ".join(f"{cn}={row.get(cn,'?')}" for cn in col_names[:4]))
-                except Exception:
-                    pass  # graceful fallback if L2 data parsing fails
+                # ── Fallback: parse L2 chunks (backward compatible) ──
+                if not sqlite_ok:
+                    _fallback_l2_aggregation(
+                        docs_dir=docs_dir,
+                        sheet_name=sheet_name,
+                        col_names_for_agg=col_names_for_agg,
+                        group_col=group_col,
+                        value_col=value_col,
+                        filter_value=filter_value,
+                        columns=columns,
+                        expanded_terms=expanded_terms,
+                        results_parts=results_parts,
+                    )
 
             # Data quality findings
             if findings:
@@ -2088,6 +2547,9 @@ def register_all_tools(
     # Raw/uncompiled KB tools (always available)
     registry.register(RawSearchTool())
     registry.register(DocGrepTool())
+    registry.register(GrepDocsTool())
+    registry.register(ReadDocTool())
+    registry.register(ListDocsTool())
     registry.register(ExpandTool())
     registry.register(WikiBrowseTool())
     registry.register(SearchExcelTool())

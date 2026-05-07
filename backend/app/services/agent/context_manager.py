@@ -864,8 +864,9 @@ class ContextManager:
                     pass
             elif has_l2:
                 context_block = (
-                    "知识库已部分编译（有L2索引但缺少摘要）。\n"
-                    "可使用 search_keyword 搜索，用 raw_search 作为补充。"
+                    "知识库已部分编译（有L2分块但缺少摘要）。\n"
+                    "优先使用 grep_docs 直接搜索原文（更可靠，覆盖全文），"
+                    "search_keyword 搜索FTS5索引作为补充。"
                 )
                 excel_docs = _detect_excel_docs(kb_id)
                 if excel_docs:
@@ -876,8 +877,7 @@ class ContextManager:
             else:
                 context_block = (
                     "知识库尚未编译，无预建索引。\n"
-                    "请使用 raw_search 或 doc_grep 直接搜索文档原文。"
-                    "也可以用 wiki_browse list 查看可用文档列表。"
+                    "请使用 grep_docs 搜索原文，用 read_doc 读取文档内容，用 list_docs 查看文档列表。"
                 )
 
         if context_block:

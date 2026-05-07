@@ -110,7 +110,6 @@ class KBCompilationState:
     def get_available_tools(self) -> list[str]:
         """Return list of tool names that should be registered based on state."""
         tools = [
-            "search_keyword",
             "assess_complexity",
             "report_findings",
             "batch_expand_abstracts",
@@ -119,7 +118,12 @@ class KBCompilationState:
             "recall_describe",
         ]
 
+        # Raw document tools always available (no pre-indexing needed)
+        tools.extend(["grep_docs", "read_doc", "list_docs", "doc_grep", "raw_search", "expand"])
+
+        # FTS5 search only useful when L2 chunks exist
         if self.has_l2:
+            tools.append("search_keyword")
             tools.extend(["read_l2"])
 
         if self.has_l1:
@@ -143,23 +147,33 @@ class KBCompilationState:
 
         if not self.has_l2 and not self.has_l1:
             return (
-                "\n\n[系统提示] 知识库文档已上传但尚未编译。"
-                "请使用 search_keyword 工具搜索原始文档文本。"
-                "搜索能力受限，建议用户触发编译以获得更好的分析体验。"
+                f"\n\n[重要: 无预编译搜索模式] 该知识库有 {self.doc_count} 个文档，已上传但未预编译。"
+                "你拥有完整的原始文档搜索能力，请按以下策略工作：\n"
+                "1. 先用 list_docs 了解知识库中有哪些文档\n"
+                "2. 用 grep_docs 搜索关键词(人名、地名、案件要素等)，先以 files_with_matches 模式查看分布\n"
+                "3. 用 read_doc 读取相关文档的关键段落（grep会返回行号）\n"
+                "4. 对于复杂问题，自动将问题分解为2-3个子问题，分别用grep搜索不同关键词\n"
+                "5. 综合所有发现回答用户，标注信息来源于哪个文档\n"
+                "禁止说'无法搜索'或'需要先编译'，你拥有grep_docs+read_doc+list_docs三个工具可以完成搜索。"
             )
 
         if self.has_l2 and not self.has_l1:
             return (
-                "\n\n[系统提示] 知识库已完成L2索引（原始文本分块+关键词搜索）。"
-                "可使用 search_keyword 和 read_l2 进行检索。"
-                "L1摘要尚未生成，建议用户触发编译以获得更高效的分析能力。"
+                f"\n\n[重要] 知识库有 {self.doc_count} 个文档，L2分块已完成但无L1摘要。"
+                "推荐优先使用以下工具搜索原始文档（更可靠）：\n"
+                "1. grep_docs — 全文正则搜索，直接在原始文档中查找关键词\n"
+                "2. read_doc — 按行号读取文档内容\n"
+                "3. list_docs — 浏览文档列表\n"
+                "提示：grep_docs扫描所有parsed.md原文，比search_keyword(仅FTS5索引)覆盖更全面。"
+                "遇到搜索无结果时，请尝试grep_docs用不同关键词重试。"
             )
 
         if self.has_l1 and not self.has_entities:
             return (
                 "\n\n[系统提示] 知识库已完成L2+L1编译（含摘要）。"
-                "可使用 search_keyword、search_vector、read_l1、read_l2 进行多级检索。"
+                "可使用 grep_docs(原文搜索)、search_keyword、read_l1、read_l2 进行多级检索。"
                 "全局实体图谱尚未生成，实体分析功能暂不可用。"
+                "提示：grep_docs直接搜索原文，是关键词搜索最可靠的工具。"
             )
 
         # Fully compiled

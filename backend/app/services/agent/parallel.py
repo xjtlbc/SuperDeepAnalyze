@@ -112,7 +112,36 @@ async def _execute_research(
         return summary
 
     # Step 2: Extract key information from search results
-    summary.entities_found = list(extract_entities(search_results_text, max_count=15))
+    # Try structured JSON extraction first, fall back to regex only for plain text
+    try:
+        data = json.loads(search_results_text)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    for key in ("name", "entity", "title", "label"):
+                        val = item.get(key, "")
+                        if isinstance(val, str) and 2 <= len(val) <= 30:
+                            summary.entities_found.append(val)
+                    # Also extract from entities_mentioned in L1 results
+                    for key in ("entities_mentioned", "entities", "names"):
+                        em = item.get(key, [])
+                        if isinstance(em, list):
+                            for e in em:
+                                ename = e.get("name", e) if isinstance(e, dict) else e
+                                if isinstance(ename, str) and 2 <= len(ename) <= 30:
+                                    summary.entities_found.append(ename)
+        elif isinstance(data, dict):
+            for key in ("entities", "entities_mentioned", "results"):
+                val = data.get(key, [])
+                if isinstance(val, list):
+                    for e in val:
+                        ename = e.get("name", e) if isinstance(e, dict) else e
+                        if isinstance(ename, str) and 2 <= len(ename) <= 30:
+                            summary.entities_found.append(ename)
+        summary.entities_found = summary.entities_found[:15]
+    except (json.JSONDecodeError, ValueError):
+        # Fall back to regex for non-JSON text
+        summary.entities_found = list(extract_entities(search_results_text, max_count=15))
 
     # Extract doc references
     try:

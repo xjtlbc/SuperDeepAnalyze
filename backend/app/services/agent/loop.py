@@ -258,22 +258,56 @@ class AgentLoop:
                     from app.services.agent.tools import SearchExcelTool
                     excel_tool = SearchExcelTool()
                     yield {"type": "thinking", "content": f"检测到表格数据查询，正在预加载 {len(excel_docs)} 个表格..."}
+                    table_data_parts = []
                     for doc_id in excel_docs[:3]:
                         try:
                             result = await excel_tool.execute(
                                 kb_id=_kb_id, doc_id=doc_id,
                                 query=user_query,
                             )
-                            state.messages.append({
-                                "role": "user",
-                                "content": (
-                                    f"[系统预检索] 以下是知识库中表格文档 {doc_id} 的数据概览。"
-                                    f"请仅基于这些真实数据回答用户问题：\n\n{result[:4000]}"
-                                ),
-                            })
+                            table_data_parts.append(result[:4000])
                             yield {"type": "thinking", "content": f"已加载表格数据 ({len(result)} 字符)"}
                         except Exception as e:
                             logger.warning("Pre-fetch search_excel failed for %s: %s", doc_id, e)
+
+                    if table_data_parts and _llm:
+                        # Direct synthesis: use LLM to answer from pre-fetched table data
+                        yield {"type": "thinking", "content": "表格数据加载完成，直接生成答案..."}
+                        try:
+                            synthesis_prompt = (
+                                f"请基于以下表格数据回答用户问题。如果数据已经包含答案，直接回答。\n\n"
+                                f"用户问题: {user_query}\n\n"
+                                f"表格数据:\n{chr(10).join(table_data_parts)}\n\n"
+                                f"请用中文回答。如果数据不足，请说明。"
+                            )
+                            response = await _llm.chat(
+                                role=RoleType.LIGHTWEIGHT,
+                                messages=[{"role": "user", "content": synthesis_prompt}],
+                                temperature=0.1,
+                            )
+                            answer = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                            if answer:
+                                yield {
+                                    "type": "final_answer",
+                                    "content": answer,
+                                    "tool_calls_made": 1,
+                                    "iterations": 0,
+                                    "terminal_reason": TerminalReason.COMPLETED.value,
+                                    "evidence_refs": [],
+                                }
+                                return
+                        except Exception as e:
+                            logger.warning("Table synthesis failed, falling back to agent loop: %s", e)
+                    else:
+                        # No LLM available, inject data as context for agent loop
+                        for td in table_data_parts:
+                            state.messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"[系统预检索] 以下是知识库中表格文档的数据概览。"
+                                    f"请仅基于这些真实数据回答用户问题：\n\n{td}"
+                                ),
+                            })
             except Exception as e:
                 logger.warning("Table pre-fetch failed: %s", e)
 
@@ -289,7 +323,9 @@ class AgentLoop:
             yield {"type": "thinking", "content": f"已加载 {len(prior_memories)} 条历史记忆"}
 
         # ── Hybrid routing: simple queries → fast RAG ────────────
-        if should_use_simple_rag(query_plan) and _llm:
+        # For partial/uncompiled KBs, always prefer simple RAG over full agent loop
+        _kb_has_l1 = getattr(_kb_state, "has_l1", False) if _kb_state else False
+        if (should_use_simple_rag(query_plan) or not _kb_has_l1) and _llm:
             yield {"type": "thinking", "content": "简单查询，使用快速检索模式..."}
             try:
                 rag_result = await run_simple_rag(
@@ -935,32 +971,64 @@ class AgentLoop:
             # ── No tool calls → REPORTING phase → final answer ─────
             state.phase = LoopPhase.REPORTING
 
-            # Fallback: if no content and no tool calls, try a quick search
+            # Fallback: if no content and no tool calls, try a quick grep search
             if not content.strip() and len(state.tool_calls_log) < 2:
-                self._logger.info("Empty answer with few tool calls, executing fallback search")
+                self._logger.info("Empty answer with few tool calls, executing fallback grep search")
                 try:
-                    from app.services.retrieval.hybrid_search import KeywordSearch, _extract_chinese_words
-                    words = _extract_chinese_words(user_query)
-                    if words:
-                        fallback_results = KeywordSearch.search(
-                            " ".join(words), top_k=5, kb_id=_kb_id,
-                        )
-                        if fallback_results:
-                            parts = []
-                            for r in fallback_results[:5]:
-                                doc_id = r.get("doc_id", "")
-                                snippet = r.get("content", "")[:300]
-                                parts.append(f"[{doc_id}] {snippet}")
+                    # Build proper regex pattern from query (n-gram sliding window)
+                    import re as _re
+                    cjk_chars = _re.findall(r'[一-鿿]', user_query)
+                    terms = set()
+                    for i in range(len(cjk_chars) - 1):
+                        terms.add(''.join(cjk_chars[i:i+2]))
+                    terms.update(cjk_chars)
+                    skip = {"什么", "怎么", "如何", "哪里", "哪个", "为什么", "结合", "看看", "是否", "一下", "这个", "那个", "知识库", "知识"}
+                    key_terms = sorted(terms - skip, key=len, reverse=True)
+                    pattern = "|".join(key_terms[:10]) if key_terms else user_query[:30]
+
+                    from app.services.agent.tools import GrepDocsTool
+                    grep = GrepDocsTool()
+                    grep_result = await grep.execute(
+                        kb_id=_kb_id, pattern=pattern,
+                        output_mode="content", max_results=8,
+                        context_lines=2,
+                    )
+                    if grep_result and "未找到" not in grep_result:
+                        # Try LLM synthesis from grep results
+                        try:
+                            synth_prompt = (
+                                f"基于以下检索结果，简洁回答用户问题。\n\n"
+                                f"检索结果:\n{grep_result[:3000]}\n\n"
+                                f"用户问题: {user_query}"
+                            )
+                            response = await _llm.chat(
+                                role=RoleType.LIGHTWEIGHT,
+                                messages=[{"role": "user", "content": synth_prompt}],
+                                temperature=0.1,
+                            )
+                            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                        except Exception:
+                            pass
+                        if not content:
                             content = (
                                 f"搜索未找到充分信息，以下是关键词匹配结果：\n\n"
-                                + "\n".join(parts)
-                                + "\n\n请尝试用更具体的关键词提问。"
+                                f"{grep_result[:2000]}"
+                                f"\n\n请尝试用更具体的关键词提问。"
                             )
                 except Exception as e:
-                    self._logger.warning("Fallback search failed: %s", e)
+                    self._logger.warning("Fallback grep search failed: %s", e)
 
                 if not content.strip():
                     content = "抱歉，经过多轮搜索未能找到相关信息。请尝试用更具体的关键词提问。"
+
+            # ── Lightweight fact verification ──
+            if content.strip() and "未能找到" not in content:
+                try:
+                    verify = await self._verify_claims(content, _kb_id)
+                    if verify:
+                        content += verify
+                except Exception:
+                    pass
 
             if self._emitter:
                 self._emitter.emit_final_answer(content)
@@ -1025,6 +1093,40 @@ class AgentLoop:
         "server error", "overloaded", "capacity",
     )
     _MAX_TRANSIENT_RETRIES = 5
+
+    async def _verify_claims(self, answer: str, kb_id: str) -> str:
+        """Lightweight fact verification: grep key claims against source docs."""
+        try:
+            import re as _re
+            from pathlib import Path
+            from app.config import settings
+
+            # Extract potential claims: 2-4 char CJK phrases that look like facts
+            cjk = _re.findall(r'[一-鿿]{2,4}', answer[:1000])
+            # Keep unique, non-common terms
+            skip = {"可以", "我们", "他们", "这个", "那个", "什么", "怎么", "如何",
+                    "根据", "以及", "但是", "因为", "所以", "如果", "已经", "没有",
+                    "一个", "进行", "应当", "对于", "通过", "规定", "有关", "可能"}
+            claims = list(dict.fromkeys(c for c in cjk if c not in skip))[:8]
+            if len(claims) < 2:
+                return ""
+
+            docs_dir = Path(settings.KB_DIR) / kb_id / "documents"
+            confirmed = 0
+            for claim in claims[:5]:
+                for doc_dir in docs_dir.iterdir():
+                    parsed = doc_dir / "parsed.md"
+                    if parsed.exists() and claim in parsed.read_text(encoding="utf-8", errors="replace"):
+                        confirmed += 1
+                        break
+
+            if confirmed >= 2:
+                return f"\n\n---\n> 🔍 自动验证: {confirmed}/{len(claims[:5])} 关键表述已在源文档中确认"
+            elif confirmed == 1:
+                return f"\n\n---\n> 🔍 自动验证: 仅 {confirmed}/{len(claims[:5])} 表述直接确认（其余可能需要原文核实）"
+        except Exception:
+            pass
+        return ""
 
     async def _streaming_llm_call(
         self, _llm, messages: list[dict], tools: list[dict],

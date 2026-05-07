@@ -29,7 +29,7 @@ _CJK_PATTERN = re.compile(r'[一-鿿]{2,6}')
 def extract_entities(text: str, max_count: int = 50) -> set[str]:
     """Extract CJK entity candidates from text.
 
-    Filters out stopwords and all-particle strings.
+    Filters out stopwords, all-particle strings, and garbled mid-word cuts.
     Returns a set of unique entity name candidates (2-6 CJK chars).
     """
     entities: set[str] = set()
@@ -38,6 +38,9 @@ def extract_entities(text: str, max_count: int = 50) -> set[str]:
         if name in _CJK_STOPWORDS:
             continue
         if all(c in _GRAMMAR_PARTICLES for c in name):
+            continue
+        # Reject names starting with grammar particles (mid-word fragments)
+        if name[0] in "的了是在和与或就着过们这那":
             continue
         entities.add(name)
         if len(entities) >= max_count:

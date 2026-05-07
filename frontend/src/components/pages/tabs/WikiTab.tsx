@@ -4,6 +4,7 @@ import { API_BASE, TYPE_LABELS } from './shared'
 import { EntityTypeIcon, GapIconRenderer } from './EntityIcon'
 import { ConceptTags } from '../../knowledge/ConceptTags'
 import { WikiIcon, ClockIcon, SearchIcon, WarningIcon, ExternalLinkIcon, InfoIcon } from '../../Icons'
+import EntityProfilePanel from './EntityProfilePanel'
 
 class WikiErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; errMsg: string }> {
   constructor(props: { children: ReactNode }) {
@@ -55,9 +56,11 @@ interface EntityDetail {
   type: string
   aliases: string[]
   attributes: Record<string, unknown>
-  relations: Array<{ target: string; relation: string }>
-  events: Array<{ title: string; time?: string; description?: string }>
+  relations: Array<{ target: string; target_id?: string; target_type?: string; relation: string; type: string; weight: number }>
+  events: Array<{ title?: string; date?: string; time?: string; description?: string }>
   mentions: Array<{ doc_id: string; chunk_ids: string[]; summary: string }>
+  statistics?: { relation_count: number; event_count: number; mention_count: number; doc_count: number }
+  mention_count?: number
 }
 
 interface TimelineParticipant {
@@ -77,10 +80,6 @@ interface TimelineEvent {
   confidence?: number
 }
 
-const TYPE_COLORS: Record<string, string> = {
-  person: '#6366f1', organization: '#f59e0b', location: '#10b981',
-  event: '#ef4444', object: '#8b5cf6', concept: '#06b6d4',
-}
 
 function formatDate(dateStr: string): string {
   const m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/)
@@ -463,85 +462,10 @@ function EmbeddedWikiView({ kbId, refreshKey = 0 }: { kbId: string; refreshKey?:
           <div className="wiki-tab__empty-state"><WikiIcon className="wiki-tab__empty-icon" /><p className="wiki-tab__empty-text">选择一个实体查看详情</p></div>
         )}
         {!entityLoading && selectedEntity && activeTab === 'entities' && (
-          <div style={{ maxWidth: 800 }}>
-            {/* Entity header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: TYPE_COLORS[selectedEntity.type] || 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <div style={{ color: '#fff' }}><EntityTypeIcon type={selectedEntity.type} className="icon-md" /></div>
-              </div>
-              <div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{selectedEntity.name}</h2>
-                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{TYPE_LABELS[selectedEntity.type] || selectedEntity.type} · {selectedEntity.id}</span>
-              </div>
-            </div>
-
-            {selectedEntity.aliases && selectedEntity.aliases.length > 0 && (
-              <div className="wiki-tab__section">
-                <h3 className="wiki-tab__section-title">别名</h3>
-                <div className="wiki-tab__aliases">{selectedEntity.aliases.map((a, i) => <span key={i} className="wiki-tab__alias-tag">{a}</span>)}</div>
-              </div>
-            )}
-
-            {selectedEntity.attributes && Object.keys(selectedEntity.attributes).length > 0 && (
-              <div className="wiki-tab__section">
-                <h3 className="wiki-tab__section-title">属性</h3>
-                <div className="wiki-tab__attrs-grid">
-                  {Object.entries(selectedEntity.attributes).map(([k, v]) => (
-                    <div key={k} className="wiki-tab__attr-row">
-                      <span className="wiki-tab__attr-key">{k}</span>
-                      <span className="wiki-tab__attr-value">{typeof v === 'string' || typeof v === 'number' ? String(v) : JSON.stringify(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {selectedEntity.relations && selectedEntity.relations.length > 0 && (
-              <div className="wiki-tab__section">
-                <h3 className="wiki-tab__section-title">关系网络 ({selectedEntity.relations.length})</h3>
-                <div className="wiki-tab__relations">
-                  {selectedEntity.relations.map((rel, i) => (
-                    <div key={i} className="wiki-tab__relation-row">
-                      <span className="wiki-tab__relation-name">{selectedEntity.name}</span>
-                      <span className="wiki-tab__relation-arrow">→</span>
-                      <span className="wiki-tab__relation-label">{rel.relation}</span>
-                      <span className="wiki-tab__relation-arrow">→</span>
-                      <span className="wiki-tab__relation-name">{rel.target}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {selectedEntity.events && selectedEntity.events.length > 0 && (
-              <div className="wiki-tab__section">
-                <h3 className="wiki-tab__section-title">相关事件 ({selectedEntity.events.length})</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {selectedEntity.events.map((ev, i) => (
-                    <div key={i} style={{ padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: 8, border: '1px solid var(--border)' }}>
-                      <p style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>{safeStr(ev.title) || '未命名事件'}</p>
-                      {ev.time && <p style={{ fontSize: 12, color: 'var(--accent)', margin: '3px 0 0' }}>{formatDate(ev.time)}</p>}
-                      {ev.description && <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '4px 0 0' }}>{safeStr(ev.description)}</p>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {selectedEntity.mentions && selectedEntity.mentions.length > 0 && (
-              <div className="wiki-tab__section">
-                <h3 className="wiki-tab__section-title">文档引用 ({selectedEntity.mentions.length})</h3>
-                <div className="wiki-tab__mentions">
-                  {selectedEntity.mentions.map((m, i) => (
-                    <div key={i} className="wiki-tab__mention-item">
-                      <p className="wiki-tab__mention-doc">{m.doc_id}</p>
-                      <p className="wiki-tab__mention-summary">{safeStr(m.summary)}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+          <EntityProfilePanel
+            entity={selectedEntity}
+            onEntityClick={(entityId) => fetchEntity(entityId)}
+          />
         )}
 
         {/* ======== TIMELINE DETAIL ======== */}

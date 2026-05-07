@@ -162,7 +162,7 @@ async def get_wiki_overview(kb_id: str):
 
 @router.get("/{kb_id}/entity/{entity_id}")
 async def get_wiki_entity(kb_id: str, entity_id: str):
-    """Get entity wiki page with relations, mentions, and events."""
+    """Get entity wiki page with relations, graph, timeline, mentions, and statistics."""
     l0_dir = settings.KB_DIR / kb_id / "l0"
     entities_path = l0_dir / "entities.json"
 
@@ -176,36 +176,103 @@ async def get_wiki_entity(kb_id: str, entity_id: str):
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
 
+    # Build id->entity lookup for enriching relations
+    id_to_entity: dict[str, dict] = {e["id"]: e for e in entities}
+
+    # ── Enrich relations from relations.json ──
+    enriched_relations = []
+    relations_path = l0_dir / "relations.json"
+    all_relations: list[dict] = []
+    if relations_path.exists():
+        with open(relations_path, "r", encoding="utf-8") as f:
+            all_relations = json.load(f)
+
+    entity_name = entity["name"]
+    for rel in all_relations:
+        if rel.get("subject") == entity_name or rel.get("object") == entity_name:
+            is_subject = rel.get("subject") == entity_name
+            target_name = rel.get("object") if is_subject else rel.get("subject")
+            target_id = rel.get("object_id") if is_subject else rel.get("subject_id")
+            target_entity = id_to_entity.get(target_id) or _find_entity_by_name(entities, target_name)
+            enriched_relations.append({
+                "subject": rel.get("subject", ""),
+                "target": target_name,
+                "target_id": target_id,
+                "target_type": target_entity.get("type", "unknown") if target_entity else "unknown",
+                "relation": rel.get("predicate", "相关"),
+                "type": rel.get("type", "相关"),
+                "weight": rel.get("weight", 0.5),
+            })
+    # Also include inline relations from entity if present
+    for rel in entity.get("relations", []):
+        target_name = rel.get("target", rel.get("object", ""))
+        target_entity = id_to_entity.get(target_name) or _find_entity_by_name(entities, target_name)
+        enriched_relations.append({
+            "subject": rel.get("subject", entity_name),
+            "target": target_name,
+            "target_id": target_entity["id"] if target_entity else None,
+            "target_type": target_entity.get("type", "unknown") if target_entity else "unknown",
+            "relation": rel.get("predicate", rel.get("relation", "相关")),
+            "type": rel.get("type", "相关"),
+            "weight": rel.get("weight", 0.5),
+        })
+
     result = {
         "id": entity["id"],
         "name": entity["name"],
         "type": entity.get("type", "unknown"),
         "aliases": entity.get("aliases", []),
         "attributes": entity.get("attributes", {}),
-        "relations": entity.get("relations", []),
+        "mention_count": entity.get("mention_count", 0),
+        "source_chunks": entity.get("source_chunks", []),
+        "relations": enriched_relations,
     }
 
-    # Find timeline events involving this entity
+    # ── Statistics ──
+    result["statistics"] = {
+        "relation_count": len(enriched_relations),
+        "event_count": 0,
+        "mention_count": entity.get("mention_count", 0),
+        "doc_count": len(set(entity.get("source_chunks", []))),
+    }
+
+    # ── Timeline events involving this entity (sorted by date) ──
     timeline_path = l0_dir / "timeline.json"
     if timeline_path.exists():
         with open(timeline_path, "r", encoding="utf-8") as f:
             events = json.load(f)
-        # Handle both old (string list) and new (dict list) participant formats
-        def _entity_in_participants(entity_name: str, participants: list) -> bool:
+
+        def _entity_in_participants(name: str, participants: list) -> bool:
             for p in participants:
                 if isinstance(p, str):
-                    if p == entity_name:
+                    if p == name:
                         return True
                 elif isinstance(p, dict):
-                    if p.get("name") == entity_name:
+                    if p.get("name") == name:
                         return True
             return False
 
-        result["events"] = [
-            ev for ev in events if _entity_in_participants(entity["name"], ev.get("participants", []))
+        entity_events = [
+            ev for ev in events
+            if _entity_in_participants(entity_name, ev.get("participants", []))
         ]
+        # Sort by date (descending, recent first)
+        entity_events.sort(key=lambda e: e.get("date", e.get("time", "")), reverse=True)
+        result["events"] = entity_events
+        result["statistics"]["event_count"] = len(entity_events)
 
-    # Find L1 mentions
+    # ── Cross-references ──
+    cross_refs_path = l0_dir / "cross_refs.json"
+    if cross_refs_path.exists():
+        with open(cross_refs_path, "r", encoding="utf-8") as f:
+            cross_refs = json.load(f)
+        entity_cross_refs = [
+            cr for cr in cross_refs
+            if cr.get("entity", "") == entity_name
+        ]
+        result["cross_refs"] = entity_cross_refs
+
+    # ── L1 mentions ──
     l1_dir = settings.KB_DIR / kb_id / "documents"
     mentions = []
     if l1_dir.exists():
@@ -217,15 +284,29 @@ async def get_wiki_entity(kb_id: str, entity_id: str):
                     for s in summaries:
                         em = s.get("entities_mentioned", [])
                         ent_names = [e if isinstance(e, str) else e.get("name", "") for e in em]
-                        if entity["name"] in ent_names:
+                        if entity_name in ent_names:
                             mentions.append({
                                 "doc_id": doc_dir.name,
                                 "chunk_ids": s.get("chunk_ids", []),
                                 "summary": s.get("summary", ""),
                             })
     result["mentions"] = mentions
+    result["statistics"]["doc_count"] = max(
+        result["statistics"]["doc_count"],
+        len(set(m["doc_id"] for m in mentions)),
+    )
 
     return result
+
+
+def _find_entity_by_name(entities: list[dict], name: str) -> dict | None:
+    """Find an entity by name or alias in the entities list."""
+    for e in entities:
+        if e["name"] == name:
+            return e
+        if name in e.get("aliases", []):
+            return e
+    return None
 
 
 @router.get("/{kb_id}/timeline")

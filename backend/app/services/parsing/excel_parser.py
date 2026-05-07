@@ -116,6 +116,7 @@ class ExcelParser:
             content, metadata = self._try_enriched_parse(path)
             if content is not None and metadata.get("analysis"):
                 self._save_analysis_json(metadata["analysis"], doc_id, kb_id)
+                self._import_to_sqlite(path, doc_id, kb_id)
             if content is None:
                 # Fallback to calamine
                 logger.info("Falling back to calamine for %s", path.name)
@@ -163,6 +164,7 @@ class ExcelParser:
             analysis_data = metadata.get("analysis")
             if analysis_data is not None:
                 self._save_analysis_json(analysis_data, doc_id, kb_id)
+                self._import_to_sqlite(path, doc_id, kb_id)
                 chunks = _AnnotatedChunks(chunks, excel_analysis=analysis_data)
             return chunks
 
@@ -182,6 +184,17 @@ class ExcelParser:
                 json.dump(analysis, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    @staticmethod
+    def _import_to_sqlite(file_path: str | Path, doc_id: str, kb_id: str) -> None:
+        """Import Excel data into SQLite for exact aggregation queries."""
+        try:
+            from app.config import settings
+            from app.services.parsing.excel_processor import import_to_sqlite
+            db_path = settings.KB_DIR / kb_id / "documents" / doc_id / "data.db"
+            import_to_sqlite(file_path, db_path)
+        except Exception as e:
+            logger.warning("SQLite import skipped for %s: %s", doc_id, e)
 
     # ── Enriched processing ──────────────────────────────────────
 

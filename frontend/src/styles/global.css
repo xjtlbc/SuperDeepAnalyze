@@ -4997,3 +4997,87 @@ pre code {
   border-color: var(--border-strong);
   color: var(--text);
 }
+
+/* ============================================================
+   Exploration Panel (collapsible agent process)
+   ============================================================ */
+
+.exploration-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.exploration-toggle {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 10px 14px;
+  border: none; background: none; cursor: pointer;
+  font-size: 13px; color: var(--text-secondary);
+  transition: background 0.15s;
+}
+.exploration-toggle:hover { background: var(--bg-tertiary); }
+
+.exploration-toggle-icon {
+  font-size: 11px; color: var(--text-muted); width: 14px; flex-shrink: 0;
+}
+.exploration-toggle-text { font-weight: 600; color: var(--text); }
+.exploration-toggle-count {
+  margin-left: auto; font-size: 11px; color: var(--text-muted);
+  background: var(--bg-tertiary); padding: 2px 8px; border-radius: 4px;
+}
+
+.exploration-body {
+  padding: 8px 14px 14px;
+  display: flex; flex-direction: column; gap: 6px;
+  border-top: 1px solid var(--border);
+  animation: ep-body-in 0.2s ease;
+}
+@keyframes ep-body-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+.exploration-step {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 5px 10px; border-radius: 6px;
+  font-size: 12px; line-height: 1.5;
+}
+.exploration-step-icon { flex-shrink: 0; font-size: 13px; width: 18px; text-align: center; }
+.exploration-step-text { color: var(--text-secondary); }
+
+.exploration-step--intent { background: rgba(99,102,241,0.08); }
+.exploration-step--phase { background: rgba(16,185,129,0.06); }
+.exploration-step--tool { background: rgba(217,119,6,0.06); }
+.exploration-step--search { background: rgba(6,182,212,0.06); }
+.exploration-step--thinking { background: rgba(139,92,246,0.06); }
+.exploration-step--more {
+  color: var(--text-muted); font-size: 11px; font-style: italic; padding-left: 26px;
+}
+
+.exploration-step-group {
+  padding: 4px 0;
+}
+.exploration-step-group-header {
+  font-size: 12px; font-weight: 600; color: var(--text);
+  padding: 4px 10px; margin-bottom: 2px;
+}
+
+.exploration-clear {
+  display: block; width: 100%; margin-top: 4px; padding: 6px 0;
+  border: none; background: none; cursor: pointer;
+  font-size: 11px; color: var(--text-muted);
+  transition: color 0.15s;
+}
+.exploration-clear:hover { color: var(--text); }
+
+/* Citation badge */
+.chat-citation {
+  display: inline-block;
+  padding: 1px 6px; margin: 0 2px;
+  border-radius: 4px;
+  background: rgba(217,119,6,0.1);
+  color: #b45309;
+  font-size: 11px; font-weight: 600;
+  font-family: monospace;
+  vertical-align: middle;
+  cursor: default;
+}

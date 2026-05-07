@@ -5,10 +5,12 @@ Bypasses Docling entirely for Excel files. Produces:
     comment annotations, hyperlink annotations, number formatting,
     and merged-cell handling.
   - analysis JSON with column classification, distributions, and findings.
+  - data.db SQLite database with all rows for exact aggregation queries.
 """
 
 import logging
 import re
+import sqlite3
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -453,7 +455,8 @@ def _generate_sheet_markdown(ws, df: pd.DataFrame, header_row_idx: int,
     return "\n".join(lines)
 
 
-# Maximum rows to process per sheet (prevents OOM on huge files like athlete_events)
+# Maximum rows per sheet for L2 markdown generation (text chunks for reading/search).
+# Does NOT limit data.db import — all rows go to SQLite for accurate aggregation.
 MAX_ROWS = 5000
 
 
@@ -551,3 +554,126 @@ def process_excel(file_path: str | Path) -> ExcelProcessResult:
 
     logger.info("Excel processed: %d sheets, %d chars markdown", len(analysis_sheets), len(l2_markdown))
     return ExcelProcessResult(l2_markdown=l2_markdown, analysis=analysis)
+
+
+def import_to_sqlite(file_path: str | Path, db_path: str | Path) -> dict:
+    """Import ALL rows from an Excel file into an SQLite database.
+
+    Uses openpyxl read_only for memory-efficient row streaming. No row limit.
+    Creates one table per sheet. Returns {sheet_name: row_count} dict.
+
+    This is the authoritative data store for search_excel aggregation queries.
+    """
+    path = Path(file_path)
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        db_path.unlink()
+
+    conn = sqlite3.connect(str(db_path))
+    sheet_counts: dict[str, int] = {}
+    BATCH_SIZE = 5000
+
+    try:
+        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            total_rows = 0
+            header_done = False
+            safe_headers: list[str] = []
+            cols = 0
+            batch: list[list[str | None]] = []
+
+            for row_cells in ws.iter_rows(values_only=True):
+                if all(c is None or str(c).strip() == "" for c in row_cells):
+                    continue
+
+                if not header_done:
+                    header_row = [str(c) if c is not None else f"Col_{i}"
+                                  for i, c in enumerate(row_cells)]
+                    safe_headers = _sanitize_column_names(header_row)
+                    cols = len(safe_headers)
+                    col_defs = '", "'.join(safe_headers)
+                    conn.execute(f'CREATE TABLE "{sheet_name}" ("{col_defs}")')
+                    conn.commit()
+                    header_done = True
+                    continue
+
+                values = list(row_cells) + [None] * (cols - len(row_cells))
+                batch.append([str(v) if v is not None else None for v in values[:cols]])
+                total_rows += 1
+
+                if len(batch) >= BATCH_SIZE:
+                    _flush_batch(conn, sheet_name, cols, batch)
+                    batch.clear()
+
+            if batch:
+                _flush_batch(conn, sheet_name, cols, batch)
+
+            sheet_counts[sheet_name] = total_rows
+            logger.info("SQLite import '%s': %d rows → %s", sheet_name, total_rows, db_path.name)
+
+        wb.close()
+    except Exception as e:
+        logger.error("SQLite import failed for %s: %s", path.name, e)
+        conn.close()
+        if db_path.exists():
+            db_path.unlink()
+        raise
+    finally:
+        conn.close()
+
+    _create_sqlite_indexes(db_path, sheet_counts)
+    return sheet_counts
+
+
+def _sanitize_column_names(headers: list[str]) -> list[str]:
+    """Sanitize column names for safe SQL usage."""
+    safe: list[str] = []
+    seen: dict[str, int] = {}
+    for h in headers:
+        base = re.sub(r'[^a-zA-Z0-9一-鿿_]', '_', str(h))
+        if not base or base[0].isdigit():
+            base = f"col_{base}" if base else "col"
+        if base in seen:
+            seen[base] += 1
+            base = f"{base}_{seen[base]}"
+        else:
+            seen[base] = 0
+        safe.append(base)
+    return safe
+
+
+def _flush_batch(conn: sqlite3.Connection, table: str, cols: int,
+                 batch: list[list[str | None]]) -> None:
+    """Insert a batch of rows into SQLite."""
+    placeholders = ", ".join(["?"] * cols)
+    sql = f'INSERT INTO "{table}" VALUES ({placeholders})'
+    conn.executemany(sql, batch)
+    conn.commit()
+
+
+def _create_sqlite_indexes(db_path: Path, sheet_counts: dict[str, int]) -> None:
+    """Create indexes on low-cardinality columns for fast aggregation."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        for sheet_name in sheet_counts:
+            cursor = conn.execute(f'SELECT * FROM "{sheet_name}" LIMIT 1')
+            col_names = [d[0] for d in cursor.description]
+            for cn in col_names:
+                try:
+                    distinct = conn.execute(
+                        f'SELECT COUNT(DISTINCT "{cn}") FROM "{sheet_name}"'
+                    ).fetchone()[0]
+                    total = sheet_counts.get(sheet_name, 1)
+                    if distinct < total * 0.1 and distinct > 1 and distinct < 500:
+                        conn.execute(
+                            f'CREATE INDEX IF NOT EXISTS idx_{sheet_name}_{cn} ON "{sheet_name}"("{cn}")'
+                        )
+                except Exception:
+                    pass
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("Index creation failed (non-fatal): %s", e)
